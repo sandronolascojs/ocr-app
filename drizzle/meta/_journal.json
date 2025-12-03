@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1764652609009,
+      "tag": "0000_fearless_firebrand",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1764734422588,
+      "tag": "0001_living_richard_fisk",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1764738454717,
+      "tag": "0002_classy_human_cannonball",
+      "breakpoints": true
+    }
+  ]
+}
