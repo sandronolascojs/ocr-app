@@ -5,7 +5,7 @@ import AdmZip from "adm-zip";
 import { inngest } from "@/inngest/client";
 import { db } from "@/db";
 import { ocrJobs, ocrJobFrames } from "@/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   compareImageFilenames,
   extractImagesFromZip,
@@ -26,6 +26,7 @@ import {
   VOLUME_DIRS,
 } from "@/lib/paths";
 import { writeDocxFromParagraphs } from "@/lib/ocr/docx";
+import { buildParagraphsFromFrames } from "@/lib/ocr/paragraphs";
 import { JobsStatus } from "@/types";
 import { JobStep } from "@/types/enums/jobs/jobStep.enum";
 import { InngestEvents, OcrStepId } from "@/types/enums/inngest";
@@ -35,6 +36,74 @@ import { AI_CONSTANTS } from "@/constants/ai.constants";
 
 // Pequeño helper para esperar sin usar step.sleep (simple y suficiente en local)
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type ChatCompletionContentPart =
+  | string
+  | {
+      type?: string;
+      text?: string;
+    };
+
+type ChatCompletionContent = string | ChatCompletionContentPart[];
+
+type BatchOutputLine = {
+  custom_id?: string;
+  error?: {
+    message?: string;
+    code?: string;
+  };
+  response?: {
+    body?: {
+      choices?: Array<{
+        message?: {
+          content?: ChatCompletionContent;
+        };
+      }>;
+    };
+  };
+};
+
+type PersistableFrame = {
+  jobId: string;
+  filename: string;
+  baseKey: string;
+  index: number;
+  text: string;
+};
+
+const extractTextFromCompletion = (
+  completion?: ChatCompletionContent
+): string => {
+  if (typeof completion === "string") {
+    return completion.trim();
+  }
+
+  if (Array.isArray(completion)) {
+    return completion
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+
+        if (
+          part &&
+          typeof part === "object" &&
+          "type" in part &&
+          (part as { type?: string }).type === "text" &&
+          "text" in part &&
+          typeof (part as { text?: string }).text === "string"
+        ) {
+          return (part as { text: string }).text;
+        }
+
+        return "";
+      })
+      .join("")
+      .trim();
+  }
+
+  return "";
+};
 
 export const processOcrJob = inngest.createFunction(
   { id: InngestFunctions.PROCESS_OCR_JOB },
@@ -60,6 +129,7 @@ export const processOcrJob = inngest.createFunction(
       // Estado actual en memoria (se irá actualizando manualmente)
       let currentStep: JobStep =
         (job.step as JobStep | null) ?? JobStep.PREPROCESSING;
+      let totalImages = job.totalImages ?? 0;
 
       const jobRootDir = getJobRootDir(jobId);
       const rawDir = getJobRawDir(jobId);
@@ -99,6 +169,7 @@ export const processOcrJob = inngest.createFunction(
             await fs.mkdir(cropsDir, { recursive: true });
 
             const imagePaths = await extractImagesFromZip(zipPath, rawDir);
+            totalImages = imagePaths.length;
 
             await db
               .update(ocrJobs)
@@ -320,69 +391,83 @@ export const processOcrJob = inngest.createFunction(
         }
 
         await step.run(OcrStepId.SaveResultsToDb, async () => {
-          const existingFrames = await db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(ocrJobFrames)
-            .where(eq(ocrJobFrames.jobId, jobId));
+          const outputStream = await openai.files.content(batchOutputFileId);
+          const outputBuffer = Buffer.from(await outputStream.arrayBuffer());
+          const outputJsonl = outputBuffer.toString("utf8");
 
-          const alreadyHaveFrames =
-            existingFrames[0] && existingFrames[0].count > 0;
+          const lines = outputJsonl
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
 
-          if (!alreadyHaveFrames) {
-            const outputStream = await openai.files.content(batchOutputFileId);
-            const outputBuffer = Buffer.from(
-              await outputStream.arrayBuffer()
-            );
-            const outputJsonl = outputBuffer.toString("utf8");
-
-            const lines = outputJsonl
-              .split("\n")
-              .filter((l) => l.trim().length > 0);
-
-            for (const line of lines) {
-              const parsed = JSON.parse(line);
-
-              const customId: string = parsed.custom_id;
-              const match = customId.match(/^job-(.+)-frame-(\d+)-(.+)$/);
-              if (!match) continue;
-
-              const [, , idxStr, filename] = match;
-              const index = parseInt(idxStr, 10);
-
-              const completion =
-                parsed.response?.body?.choices?.[0]?.message?.content;
-              let text = "";
-
-              if (typeof completion === "string") {
-                text = completion.trim();
-              } else if (Array.isArray(completion)) {
-                text = completion
-                  .map((part: any) => {
-                    if (typeof part === "string") return part;
-                    if (
-                      part.type === "text" &&
-                      typeof part.text === "string"
-                    )
-                      return part.text;
-                    return "";
-                  })
-                  .join("")
-                  .trim();
-              }
-
-              if (!text || text === "<EMPTY>") continue;
-
-              const baseKey = getBaseKeyFromFilename(filename);
-
-              await db.insert(ocrJobFrames).values({
-                jobId,
-                filename,
-                baseKey,
-                index,
-                text,
-              });
-            }
+          if (!lines.length) {
+            throw new Error("Batch output file is empty.");
           }
+
+          if (totalImages > 0 && lines.length !== totalImages) {
+            throw new Error(
+              `Batch output mismatch: expected ${totalImages} responses but got ${lines.length}.`
+            );
+          }
+
+          const framesToPersist: PersistableFrame[] = [];
+
+          for (const line of lines) {
+            let parsed: BatchOutputLine;
+
+            try {
+              parsed = JSON.parse(line) as BatchOutputLine;
+            } catch (error) {
+              throw new Error(
+                `Invalid JSON line in batch output: ${
+                  (error as Error).message
+                }`
+              );
+            }
+
+            if (parsed.error) {
+              const message =
+                parsed.error?.message ??
+                parsed.error?.code ??
+                "Unknown OpenAI batch error";
+              throw new Error(
+                `OpenAI batch entry failed (${parsed.custom_id ?? "unknown"}): ${message}`
+              );
+            }
+
+            const customId: string | undefined = parsed.custom_id;
+            if (!customId) continue;
+
+            const match = customId.match(/^job-(.+)-frame-(\d+)-(.+)$/);
+            if (!match) continue;
+
+            const [, , idxStr, filename] = match;
+            const index = Number.parseInt(idxStr, 10);
+            if (Number.isNaN(index)) continue;
+
+            const completion =
+              parsed.response?.body?.choices?.[0]?.message?.content;
+            const text = extractTextFromCompletion(completion);
+
+            if (!text || text === "<EMPTY>") continue;
+
+            framesToPersist.push({
+              jobId,
+              filename,
+              baseKey: getBaseKeyFromFilename(filename),
+              index,
+              text,
+            });
+          }
+
+          if (!framesToPersist.length) {
+            throw new Error("No OCR frames were parsed from the batch output.");
+          }
+
+          await db.transaction(async (tx) => {
+            await tx.delete(ocrJobFrames).where(eq(ocrJobFrames.jobId, jobId));
+            await tx.insert(ocrJobFrames).values(framesToPersist);
+          });
 
           await db
             .update(ocrJobs)
@@ -403,30 +488,9 @@ export const processOcrJob = inngest.createFunction(
             .from(ocrJobFrames)
             .where(eq(ocrJobFrames.jobId, jobId));
 
-          type Frame = (typeof frames)[number];
-
-          const grouped = new Map<string, Frame[]>();
-
-          for (const f of frames) {
-            const arr = grouped.get(f.baseKey) ?? [];
-            arr.push(f);
-            grouped.set(f.baseKey, arr);
-          }
-
-          const sortedKeys = Array.from(grouped.keys()).sort((a, b) => {
-            const na = Number(a);
-            const nb = Number(b);
-            if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
-            return a.localeCompare(b);
-          });
-
-          const paragraphs: string[] = [];
-
-          for (const key of sortedKeys) {
-            const arr = grouped.get(key)!;
-            arr.sort((a, b) => a.index - b.index);
-            const combined = arr.map((r) => r.text).join(" ");
-            paragraphs.push(combined);
+          const paragraphs = buildParagraphsFromFrames(frames);
+          if (!paragraphs.length) {
+            throw new Error("Unable to build OCR paragraphs for this job.");
           }
 
           const paragraphsWithBlankLine = paragraphs.flatMap((paragraph, index) =>
@@ -518,18 +582,18 @@ export const processOcrJob = inngest.createFunction(
       }
 
       return { jobId, txtPath, docxPath, rawZipPath };
-    } catch (err: any) {
+    } catch (err) {
       console.error("processOcrJob failed", jobId, err);
+
+      const errorMessage =
+        err instanceof Error ? err.message : "Unknown error in OCR job";
 
       // Guardar error y marcar job como ERROR; el retry lo relanza desde el step que quedó
       await db
         .update(ocrJobs)
         .set({
           status: JobsStatus.ERROR,
-          error:
-            typeof err?.message === "string"
-              ? err.message
-              : "Unknown error in OCR job",
+          error: errorMessage,
         })
         .where(eq(ocrJobs.jobId, jobId));
 
