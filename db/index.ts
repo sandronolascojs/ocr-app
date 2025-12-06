@@ -1,26 +1,16 @@
 import type { ExtractTablesWithRelations } from 'drizzle-orm';
-import { drizzle, NodePgQueryResultHKT } from 'drizzle-orm/node-postgres';
+import { drizzle, NeonHttpQueryResultHKT } from 'drizzle-orm/neon-http';
 import { PgTransaction } from 'drizzle-orm/pg-core';
-import { Pool } from 'pg';
+import { neon } from '@neondatabase/serverless';
 import * as schema from './schema';
 import { env } from '@/env.mjs';
 
-const MAX_POOL_CONNECTIONS = 30;
-const IDLE_TIMEOUT = 10000;
-const CONNECTION_TIMEOUT = 10000;
-
-const postgresPool = new Pool({
-  connectionString: env.DATABASE_URL,
-  max: MAX_POOL_CONNECTIONS,
-  idleTimeoutMillis: IDLE_TIMEOUT,
-  connectionTimeoutMillis: CONNECTION_TIMEOUT,
-});
-
-export const db = drizzle(postgresPool, { schema: { ...schema } });
+const sql = neon(env.DATABASE_URL);
+export const db = drizzle({ client: sql });
 
 export type DrizzleDB = typeof db;
 export type DrizzleTx = PgTransaction<
-  NodePgQueryResultHKT,
+  NeonHttpQueryResultHKT,
   typeof schema,
   ExtractTablesWithRelations<typeof schema>
 >;

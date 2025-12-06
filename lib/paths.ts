@@ -1,6 +1,7 @@
 import path from "node:path";
+import os from "node:os";
 
-const BASE_VOLUME_DIR = path.resolve(process.cwd(), "mnt");
+const BASE_VOLUME_DIR = path.join(os.tmpdir(), "ocr-app");
 
 export const VOLUME_DIRS = {
   base: BASE_VOLUME_DIR,

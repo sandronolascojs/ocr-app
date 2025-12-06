@@ -5,32 +5,45 @@ type UploadArgs = {
   file: File;
 };
 
+type SignedUploadPayload = {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+};
+
 export const useUploadOcrZip = () => {
   const utils = trpc.useUtils();
-  const mutation = trpc.ocr.uploadZip.useMutation();
+  const prepareUpload = trpc.ocr.uploadZip.useMutation();
+  const confirmUpload = trpc.ocr.confirmUpload.useMutation();
 
   return useMutation({
     mutationFn: async ({ file }: UploadArgs) => {
-      const base64 = await fileToDataUrl(file);
-
-      const res = await mutation.mutateAsync({
-        fileBase64: base64,
+      const prepareResponse = await prepareUpload.mutateAsync({
         filename: file.name,
+        fileType: file.type || "application/zip",
+        fileSize: file.size,
       });
 
-      return res; // { jobId }
+      await uploadViaSignedUrl(file, prepareResponse.upload);
+
+      await confirmUpload.mutateAsync({ jobId: prepareResponse.jobId });
+
+      return { jobId: prepareResponse.jobId };
     },
     onSuccess: () => {
       utils.ocr.listJobs.invalidate();
     },
   });
-}
+};
 
-async function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = reject;
-    reader.onload = () => resolve(reader.result as string);
-    reader.readAsDataURL(file);
+const uploadViaSignedUrl = async (file: File, signed: SignedUploadPayload) => {
+  const response = await fetch(signed.url, {
+    method: signed.method,
+    headers: signed.headers,
+    body: file,
   });
-}
+
+  if (!response.ok) {
+    throw new Error(`Failed to upload ZIP to storage (status ${response.status})`);
+  }
+};

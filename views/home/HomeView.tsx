@@ -36,7 +36,7 @@ import { cn } from "@/lib/utils";
 
 const uploadSchema = z.object({
   file: z.custom<File>((file) => file instanceof File)
-    .refine((file) => file.name.toLowerCase().endsWith(".zip"), "Only .zip files are allowed"),
+    .refine((file) => file.name.toLowerCase().endsWith(".zip"), "Only .zip files are allowed").optional(),
 });
 
 type UploadFormValues = z.infer<typeof uploadSchema>;
@@ -65,26 +65,14 @@ const statusVariant: Record<JobsStatus, React.ComponentProps<typeof Badge>["vari
     ERROR: "destructive",
   };
 
-// ---------- Helpers para descargar base64 ----------
+// ---------- Helpers para descargar desde URLs firmadas ----------
 
-function b64ToBlob(base64: string, mime: string) {
-  const byteChars = atob(base64);
-  const byteNumbers = new Array(byteChars.length);
-  for (let i = 0; i < byteChars.length; i++) {
-    byteNumbers[i] = byteChars.charCodeAt(i);
+const openSignedUrl = (url: string) => {
+  const newWindow = window.open(url, "_blank", "noopener,noreferrer");
+  if (!newWindow) {
+    window.location.href = url;
   }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: mime });
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+};
 
 // ---------- Página principal ----------
 
@@ -138,10 +126,11 @@ const HomePage = () => {
       toast.success("Job created", {
         description: `Job ID: ${jobId}`,
       });
-    } catch (err: any) {
-      console.error(err);
+    } catch (error: unknown) {
+      console.error(error);
       toast.error("Error uploading ZIP", {
-        description: err?.message ?? "Unexpected error",
+        description:
+          error instanceof Error ? error.message : "Unexpected error",
       });
     }
   });
@@ -154,10 +143,11 @@ const HomePage = () => {
         description: "The job will resume from its last step.",
       });
       jobQuery.refetch();
-    } catch (err: any) {
-      console.error(err);
+    } catch (error: unknown) {
+      console.error(error);
       toast.error("Error retrying job", {
-        description: err?.message ?? "Unexpected error",
+        description:
+          error instanceof Error ? error.message : "Unexpected error",
       });
     }
   };
@@ -173,24 +163,21 @@ const HomePage = () => {
   };
 
   const handleDownloadTxt = () => {
-    if (!resultQuery.ocrResult || !currentJobId) return;
-    const blob = b64ToBlob(resultQuery.ocrResult.txtBase64, "text/plain");
-    downloadBlob(blob, `${currentJobId}.txt`);
+    const url = resultQuery.ocrResult?.txt?.url;
+    if (!url) return;
+    openSignedUrl(url);
   };
 
   const handleDownloadDocx = () => {
-    if (!resultQuery.ocrResult || !currentJobId) return;
-    const blob = b64ToBlob(
-      resultQuery.ocrResult.docxBase64,
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    );
-    downloadBlob(blob, `${currentJobId}.docx`);
+    const url = resultQuery.ocrResult?.docx?.url;
+    if (!url) return;
+    openSignedUrl(url);
   };
 
   const handleDownloadRawZip = () => {
-    if (!resultQuery.ocrResult?.rawZipBase64 || !currentJobId) return;
-    const blob = b64ToBlob(resultQuery.ocrResult.rawZipBase64, "application/zip");
-    downloadBlob(blob, `${currentJobId}-raw.zip`);
+    const url = resultQuery.ocrResult?.rawZip?.url;
+    if (!url) return;
+    openSignedUrl(url);
   };
 
   const progressPct = useMemo(() => {
@@ -236,7 +223,7 @@ const HomePage = () => {
                       if (file) {
                         setValue("file", file, { shouldValidate: true });
                       } else {
-                        setValue("file", undefined as any, {
+                        setValue("file", undefined, {
                           shouldValidate: true,
                         });
                       }
@@ -479,7 +466,8 @@ const HomePage = () => {
                     !job ||
                     job.status !== "DONE" ||
                     !job.hasResults ||
-                    resultQuery.isLoading
+                    resultQuery.isLoading ||
+                    !resultQuery.ocrResult?.txt
                   }
                 >
                   Download TXT
@@ -494,7 +482,8 @@ const HomePage = () => {
                     !job ||
                     job.status !== "DONE" ||
                     !job.hasResults ||
-                    resultQuery.isLoading
+                    resultQuery.isLoading ||
+                    !resultQuery.ocrResult?.docx
                   }
                 >
                   Download DOCX
@@ -511,7 +500,7 @@ const HomePage = () => {
                     job.status !== "DONE" ||
                     !job.hasResults ||
                     resultQuery.isLoading ||
-                    !resultQuery.ocrResult?.rawZipBase64
+                    !resultQuery.ocrResult?.rawZip
                   }
                 >
                   Download Filtered ZIP

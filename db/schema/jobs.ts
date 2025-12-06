@@ -18,6 +18,7 @@ export const ocrJobs = pgTable("ocr_jobs", {
 
   txtPath: text("txt_path"),
   docxPath: text("docx_path"),
+  rawZipPath: text("raw_zip_path"),
 
   // Info del batch de OpenAI
   batchId: text("batch_id"),

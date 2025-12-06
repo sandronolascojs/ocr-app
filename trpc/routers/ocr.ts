@@ -3,13 +3,12 @@ import { createTRPCRouter, baseProcedure } from "@/trpc/init";
 import { db } from "@/db";
 import { ocrJobs } from "@/db/schema";
 import { inngest } from "@/inngest/client";
-import * as fs from "node:fs/promises";
 import {
-  VOLUME_DIRS,
-  getJobRawArchivePath,
-  getJobRootDir,
-  getJobZipPath,
-} from "@/lib/paths";
+  createSignedDownloadUrl,
+  createSignedUploadUrl,
+  ensureObjectExists,
+  getJobZipKey,
+} from "@/lib/storage";
 import { InngestEvents, JobsStatus, JobStep } from "@/types";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
@@ -19,47 +18,84 @@ export const ocrRouter = createTRPCRouter({
   uploadZip: baseProcedure
     .input(
       z.object({
-        fileBase64: z.string(), // data:...;base64,xxx
+        fileType: z.string().min(1).max(128).optional(),
         filename: z.string(),
+        fileSize: z.number().int().positive(),
       })
     )
     .mutation(async ({ input }) => {
-      const { fileBase64 } = input;
-
-      // Clean up the "data:...;base64," header
-      const base64Data = fileBase64.replace(/^data:.*;base64,/, "");
-      const buffer = Buffer.from(base64Data, "base64");
-
       const jobId = createId();
+      const zipKey = getJobZipKey(jobId);
 
-      // 1) Ensure base directories in /mnt
-      await fs.mkdir(VOLUME_DIRS.imagesBase, { recursive: true });
-      await fs.mkdir(VOLUME_DIRS.txtBase, { recursive: true });
-      await fs.mkdir(VOLUME_DIRS.wordBase, { recursive: true });
+      const signedUpload = await createSignedUploadUrl({
+        key: zipKey,
+        contentType: input.fileType ?? "application/zip",
+      });
 
-      // 2) Create the job folder for images
-      const jobRootDir = getJobRootDir(jobId);
-      await fs.mkdir(jobRootDir, { recursive: true });
+      return {
+        jobId,
+        upload: signedUpload,
+      };
+    }),
 
-      // 3) Save zip in /mnt/image-files/{jobId}/input.zip
-      const zipPath = getJobZipPath(jobId);
-      await fs.writeFile(zipPath, buffer);
+  confirmUpload: baseProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { jobId } = input;
 
-      // 4) Insert the job in the DB
+      // Generate the zipKey from the jobId to verify the file exists
+      const zipKey = getJobZipKey(jobId);
+
+      // Verify that the file actually exists in R2 before creating the job
+      const exists = await ensureObjectExists(zipKey);
+      if (!exists) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "ZIP not uploaded to storage yet",
+        });
+      }
+
+      // Check if job already exists (in case of duplicate confirmations)
+      const [existingJob] = await db
+        .select()
+        .from(ocrJobs)
+        .where(eq(ocrJobs.jobId, jobId))
+        .limit(1);
+
+      if (existingJob) {
+        // Job already exists, just verify it's in the correct state
+        if (existingJob.status !== JobsStatus.PENDING) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Job already confirmed",
+          });
+        }
+        // Job exists and is pending, trigger Inngest event
+        await inngest.send({
+          name: InngestEvents.ZIP_UPLOADED,
+          data: { jobId, zipKey: existingJob.zipPath },
+        });
+        return { jobId };
+      }
+
+      // Create the job only after confirming the file exists in R2
       await db.insert(ocrJobs).values({
         jobId,
-        zipPath,
+        zipPath: zipKey,
         status: JobsStatus.PENDING,
         step: JobStep.PREPROCESSING,
       });
 
-      // 5) Dispatch the Inngest event to process the zip
+      // Trigger Inngest event to start processing
       await inngest.send({
         name: InngestEvents.ZIP_UPLOADED,
-        data: { jobId, zipPath },
+        data: { jobId, zipKey },
       });
 
-      // 6) Return jobId to the client
       return { jobId };
     }),
 
@@ -156,6 +192,14 @@ export const ocrRouter = createTRPCRouter({
         });
       }
 
+      const zipExists = await ensureObjectExists(job.zipPath);
+      if (!zipExists) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Zip file not found in storage for this job",
+        });
+      }
+
       // Set the status to PROCESSING, keep the step the same
       await db
         .update(ocrJobs)
@@ -170,7 +214,7 @@ export const ocrRouter = createTRPCRouter({
         name: InngestEvents.ZIP_UPLOADED,
         data: {
           jobId,
-          zipPath: job.zipPath,
+          zipKey: job.zipPath,
         },
       });
 
@@ -190,22 +234,31 @@ export const ocrRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Result not ready" });
       }
 
-      const txtBuffer = await fs.readFile(job.txtPath);
-      const docxBuffer = await fs.readFile(job.docxPath);
-      let rawZipBase64: string | null = null;
-
-      try {
-        const rawArchivePath = getJobRawArchivePath(job.jobId);
-        const rawZipBuffer = await fs.readFile(rawArchivePath);
-        rawZipBase64 = rawZipBuffer.toString("base64");
-      } catch {
-        rawZipBase64 = null;
-      }
+      const [txtUrl, docxUrl, rawZipUrl] = await Promise.all([
+        createSignedDownloadUrl({
+          key: job.txtPath,
+          responseContentType: "text/plain",
+          downloadFilename: `${job.jobId}.txt`,
+        }),
+        createSignedDownloadUrl({
+          key: job.docxPath,
+          responseContentType:
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          downloadFilename: `${job.jobId}.docx`,
+        }),
+        job.rawZipPath
+          ? createSignedDownloadUrl({
+              key: job.rawZipPath,
+              responseContentType: "application/zip",
+              downloadFilename: `${job.jobId}-raw.zip`,
+            })
+          : Promise.resolve(null),
+      ]);
 
       return {
-        txtBase64: txtBuffer.toString("base64"),
-        docxBase64: docxBuffer.toString("base64"),
-        rawZipBase64,
+        txt: txtUrl,
+        docx: docxUrl,
+        rawZip: rawZipUrl,
       };
     }),
 });
