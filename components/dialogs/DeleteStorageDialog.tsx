@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { useDialogStore } from "@/store/dialogs"
 import { useDeleteAllUserStorage } from "@/hooks/http"
+import { toast } from "sonner"
 
 interface DeleteStorageDialogProps {
   onSuccess?: () => void
@@ -26,6 +27,12 @@ export const DeleteStorageDialog = ({
     onSuccess: () => {
       setDeleteStorageDialogOpen(false)
       onSuccess?.()
+    },
+    onError: (error) => {
+      toast.error("Failed to delete storage", {
+        description: "Failed to delete storage. Please try again.",
+      })
+      console.error("Failed to delete storage:", error)
     },
   })
 

@@ -118,7 +118,8 @@ export const AppSidebar = ({ footer, children, ...props }: AppSidebarProps) => {
       <SidebarContent>
         <NavMain items={data.navMain} />
       </SidebarContent>
-      {footer || children}
+      {footer}
+      {children}
       <SidebarRail />
     </Sidebar>
   )

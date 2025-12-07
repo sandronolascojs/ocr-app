@@ -39,6 +39,7 @@ export const EmailOtpView = ({ serverEmail }: Props) => {
     getValues,
     watch,
     control,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({ resolver: zodResolver(schema), mode: "onSubmit" });
   const codeValue = watch("code") || "";
@@ -91,7 +92,7 @@ export const EmailOtpView = ({ serverEmail }: Props) => {
         await authClient.emailOtp.checkVerificationOtp({
           email: values.email,
           otp: values.code,
-          type: "email-verification",
+          type: "sign-in",
         });
         toast.success("Email verified and signed in");
         router.replace("/");
@@ -110,8 +111,19 @@ export const EmailOtpView = ({ serverEmail }: Props) => {
   );
 
   const handleSignOut = useCallback(async () => {
-    await signOut()
-  }, [signOut])
+    try {
+      await signOut({ router })
+    } catch (error) {
+      // Error handling is done in signOut function
+      console.error("Sign out error:", error)
+    }
+  }, [router])
+
+  const handleSendCode = useCallback(() => {
+    startTransition(() => {
+      void sendCode({ email: getValues("email") });
+    });
+  }, [sendCode, getValues]);
 
   if (sessionLoading && !effectiveEmail) {
     return (
@@ -172,7 +184,28 @@ export const EmailOtpView = ({ serverEmail }: Props) => {
                         const digits = (v || "").replace(/\D/g, "").slice(0, 6)
                         field.onChange(digits)
                         if (digits.length === 6 && !isSubmitting) {
-                          void onSubmit({ email: getValues('email'), code: digits } as FormValues)
+                          const email = effectiveEmail || getValues('email')
+                          
+                          // Validate email is present and valid
+                          if (!email || !email.trim()) {
+                            setError('email', {
+                              type: 'manual',
+                              message: 'Email is required'
+                            })
+                            return
+                          }
+                          
+                          // Simple email validation regex
+                          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+                          if (!emailRegex.test(email.trim())) {
+                            setError('email', {
+                              type: 'manual',
+                              message: 'Invalid email address'
+                            })
+                            return
+                          }
+                          
+                          void onSubmit({ email: email.trim(), code: digits } as FormValues)
                         }
                       }}
                     >
@@ -210,11 +243,7 @@ export const EmailOtpView = ({ serverEmail }: Props) => {
                 type="button"
                 variant="outline"
                 disabled={!canResend || isSubmitting || isPending}
-                onClick={() =>
-                  startTransition(() =>
-                    sendCode({ email: getValues("email") })
-                  )
-                }
+                onClick={handleSendCode}
                 className="w-full"
               >
                 {resendLabel}

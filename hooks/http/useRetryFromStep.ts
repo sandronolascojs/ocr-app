@@ -22,7 +22,7 @@ export const useRetryFromStep = (options?: UseRetryFromStepOptions) => {
       utils.ocr.getJob.invalidate({ jobId: data.jobId })
       utils.ocr.listJobs.invalidate()
       
-      const stepMessage = variables.step ? stepLabel[variables.step] : "the specified step"
+      const stepMessage = variables.step ? (stepLabel[variables.step] ?? "the specified step") : "the specified step"
       
       toast.success("Job retried", {
         description: `The job will resume from ${stepMessage}.`,
@@ -31,7 +31,7 @@ export const useRetryFromStep = (options?: UseRetryFromStepOptions) => {
       options?.onSuccess?.(data)
     },
     onError: (error) => {
-      const errorMessage = error instanceof Error ? error.message : error.message || "Unexpected error"
+      const errorMessage = error.message || "Unexpected error"
       toast.error("Error retrying job", {
         description: errorMessage,
       })

@@ -1,7 +1,21 @@
+const PAGINATION_CONFIG = {
+  MIN_LIMIT: 1,
+  MAX_LIMIT: 100,
+  MIN_OFFSET: 0,
+  DEFAULT_LIMIT: 10,
+  DEFAULT_OFFSET: 0,
+} as const;
+
+const DOCUMENTS_CONFIG = {
+  DEFAULT_TYPE: "all" as const,
+} as const;
+
 export const QUERY_CONFIG = {
   REFRESH_INTERVAL_MS: 3000, // 3s
+  PAGINATION: PAGINATION_CONFIG,
   DEFAULT_PAGINATION: {
-    limit: 10,
-    offset: 0,
+    limit: PAGINATION_CONFIG.DEFAULT_LIMIT,
+    offset: PAGINATION_CONFIG.DEFAULT_OFFSET,
   },
-};
+  DOCUMENTS: DOCUMENTS_CONFIG,
+} as const;

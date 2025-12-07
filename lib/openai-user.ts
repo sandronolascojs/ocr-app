@@ -25,8 +25,12 @@ export const getUserOpenAIClient = async (
     .limit(1)
 
   if (!activeKey) {
+    console.error(
+      "User does not have an active OpenAI API key configured",
+      { userId }
+    )
     throw new Error(
-      `User ${userId} does not have an active OpenAI API key configured`
+      "User does not have an active OpenAI API key configured"
     )
   }
 

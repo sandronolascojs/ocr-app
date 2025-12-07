@@ -69,6 +69,33 @@ const encodeFilenameRfc5987 = (filename: string): string => {
   return encodeURIComponent(filename);
 };
 
+/**
+ * Checks if an error indicates that an R2 object was not found.
+ * Handles various error formats from AWS SDK S3-compatible APIs.
+ */
+const isNotFoundError = (error: unknown): boolean => {
+  const isNotFoundName =
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    (error as { name?: string }).name === "NotFound";
+  const isNotFoundCode =
+    typeof error === "object" &&
+    error !== null &&
+    "Code" in error &&
+    (error as { Code?: string }).Code === "NoSuchKey";
+  const isNotFoundStatus =
+    typeof error === "object" &&
+    error !== null &&
+    "$metadata" in error &&
+    Boolean(
+      (error as { $metadata?: { httpStatusCode?: number } }).$metadata
+        ?.httpStatusCode === 404
+    );
+
+  return isNotFoundName || isNotFoundCode || isNotFoundStatus;
+};
+
 export const createSignedUploadUrl = async (params: {
   key: string;
   contentType: string;
@@ -130,26 +157,7 @@ export const ensureObjectExists = async (key: string): Promise<boolean> => {
     );
     return true;
   } catch (error) {
-    const isNotFoundName =
-      typeof error === "object" &&
-      error !== null &&
-      "name" in error &&
-      (error as { name?: string }).name === "NotFound";
-    const isNotFoundCode =
-      typeof error === "object" &&
-      error !== null &&
-      "Code" in error &&
-      (error as { Code?: string }).Code === "NoSuchKey";
-    const isNotFoundStatus =
-      typeof error === "object" &&
-      error !== null &&
-      "$metadata" in error &&
-      Boolean(
-        (error as { $metadata?: { httpStatusCode?: number } }).$metadata
-          ?.httpStatusCode === 404
-      );
-
-    if (isNotFoundName || isNotFoundCode || isNotFoundStatus) {
+    if (isNotFoundError(error)) {
       return false;
     }
     throw error;
@@ -245,26 +253,7 @@ export const getObjectSize = async (key: string): Promise<number | null> => {
 
     return response.ContentLength ?? null;
   } catch (error) {
-    const isNotFoundName =
-      typeof error === "object" &&
-      error !== null &&
-      "name" in error &&
-      (error as { name?: string }).name === "NotFound";
-    const isNotFoundCode =
-      typeof error === "object" &&
-      error !== null &&
-      "Code" in error &&
-      (error as { Code?: string }).Code === "NoSuchKey";
-    const isNotFoundStatus =
-      typeof error === "object" &&
-      error !== null &&
-      "$metadata" in error &&
-      Boolean(
-        (error as { $metadata?: { httpStatusCode?: number } }).$metadata
-          ?.httpStatusCode === 404
-      );
-
-    if (isNotFoundName || isNotFoundCode || isNotFoundStatus) {
+    if (isNotFoundError(error)) {
       return null;
     }
     throw error;
@@ -274,6 +263,13 @@ export const getObjectSize = async (key: string): Promise<number | null> => {
 export const deleteObjectsByPrefix = async (
   prefix: string
 ): Promise<number> => {
+  // Validate prefix to prevent accidental full-bucket deletions
+  if (!prefix || prefix.trim().length === 0) {
+    throw new Error(
+      "Prefix cannot be empty or whitespace-only. This prevents accidental deletion of all objects in the bucket."
+    );
+  }
+
   const objects = await listObjectsByPrefix(prefix);
   let deletedCount = 0;
 
@@ -282,16 +278,41 @@ export const deleteObjectsByPrefix = async (
   for (let i = 0; i < objects.length; i += batchSize) {
     const batch = objects.slice(i, i + batchSize);
 
-    await r2Client.send(
-      new DeleteObjectsCommand({
-        Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
-        Delete: {
-          Objects: batch.map((obj) => ({ Key: obj.key })),
-        },
-      })
-    );
+    try {
+      const response = await r2Client.send(
+        new DeleteObjectsCommand({
+          Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+          Delete: {
+            Objects: batch.map((obj) => ({ Key: obj.key })),
+          },
+        })
+      );
 
-    deletedCount += batch.length;
+      // Handle errors from the response
+      if (response.Errors && response.Errors.length > 0) {
+        const failedKeys = response.Errors.map(
+          (error) => error.Key ?? "unknown"
+        );
+        const errorDetails = response.Errors.map(
+          (error) => `${error.Key ?? "unknown"}: ${error.Code ?? "unknown"} - ${error.Message ?? "no message"}`
+        ).join("; ");
+
+        throw new Error(
+          `Failed to delete ${response.Errors.length} object(s) with prefix "${prefix}". Failed keys: ${failedKeys.join(", ")}. Error details: ${errorDetails}`
+        );
+      }
+
+      // Update deletedCount based on successful deletions returned
+      deletedCount += response.Deleted?.length ?? 0;
+    } catch (error) {
+      // Re-throw with context about which batch failed
+      const batchStart = i;
+      const batchEnd = Math.min(i + batchSize, objects.length);
+      throw new Error(
+        `Failed to delete objects batch (indices ${batchStart}-${batchEnd}) with prefix "${prefix}": ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
+    }
   }
 
   return deletedCount;

@@ -13,7 +13,18 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Image as ImageIcon } from "lucide-react"
 import { cn, formatBytes } from "@/lib/utils"
-import { useAllImages } from "@/hooks/http"
+import { useImages } from "@/hooks/http"
+import { usePagination } from "@/hooks/ui/usePagination"
+import { trpc } from "@/trpc/client"
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination"
 
 const openSignedUrl = (url: string) => {
   const newWindow = window.open(url, "_blank", "noopener,noreferrer")
@@ -25,19 +36,37 @@ const openSignedUrl = (url: string) => {
 interface ImagesViewProps {}
 
 export const ImagesView = ({}: ImagesViewProps) => {
-  const imagesQuery = useAllImages()
+  const pagination = usePagination()
+  const utils = trpc.useUtils()
 
-  const images = imagesQuery.data ?? []
+  const imagesQuery = useImages({
+    limit: pagination.limit,
+    offset: pagination.offset,
+  })
+
+  const images = imagesQuery.images
+  const totalPages = Math.ceil((imagesQuery.total ?? 0) / pagination.pageSize)
+  const currentPage = pagination.pageIndex + 1
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">
-          Processed Images
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          All processed image ZIPs from your OCR jobs
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">
+            Processed Images
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            All processed image ZIPs from your OCR jobs
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => utils.ocr.listImages.invalidate()}
+          disabled={imagesQuery.isLoading}
+        >
+          Refresh
+        </Button>
       </div>
 
       {imagesQuery.isLoading && (
@@ -77,11 +106,91 @@ export const ImagesView = ({}: ImagesViewProps) => {
       {!imagesQuery.isLoading &&
         !imagesQuery.isError &&
         images.length > 0 && (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {images.map((image) => (
-              <ImageCard key={image.jobId} image={image} />
-            ))}
-          </div>
+          <>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {images.map((image) => (
+                <ImageCard key={image.jobId} image={image} />
+              ))}
+            </div>
+
+            {totalPages > 1 && (
+              <Pagination>
+                <PaginationContent>
+                  <PaginationItem>
+                    <PaginationPrevious
+                      href="#"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        pagination.previousPage()
+                      }}
+                      className={cn(
+                        pagination.pageIndex === 0 &&
+                          "pointer-events-none opacity-50"
+                      )}
+                    />
+                  </PaginationItem>
+
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map(
+                    (page) => {
+                      if (
+                        page === 1 ||
+                        page === totalPages ||
+                        (page >= currentPage - 1 && page <= currentPage + 1)
+                      ) {
+                        return (
+                          <PaginationItem key={page}>
+                            <PaginationLink
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                pagination.goToPage(page - 1)
+                              }}
+                              isActive={page === currentPage}
+                            >
+                              {page}
+                            </PaginationLink>
+                          </PaginationItem>
+                        )
+                      } else if (
+                        page === currentPage - 2 ||
+                        page === currentPage + 2
+                      ) {
+                        return (
+                          <PaginationItem key={page}>
+                            <PaginationEllipsis />
+                          </PaginationItem>
+                        )
+                      }
+                      return null
+                    }
+                  )}
+
+                  <PaginationItem>
+                    <PaginationNext
+                      href="#"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        pagination.nextPage()
+                      }}
+                      className={cn(
+                        pagination.pageIndex >= totalPages - 1 &&
+                          "pointer-events-none opacity-50"
+                      )}
+                    />
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
+            )}
+
+            <div className="text-sm text-muted-foreground text-center">
+              Showing {pagination.offset + 1} to{" "}
+              {Math.min(
+                pagination.offset + pagination.limit,
+                imagesQuery.total ?? 0
+              )}{" "}
+              of {imagesQuery.total ?? 0} images
+            </div>
+          </>
         )}
     </div>
   )

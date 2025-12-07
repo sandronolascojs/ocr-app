@@ -49,37 +49,87 @@ export const apiKeysRouter = createTRPCRouter({
       // Mask the key for display
       const { prefix, suffix } = maskApiKey(key)
 
-      // Deactivate all other keys for this provider
-      await ctx.db
-        .update(apiKeys)
-        .set({ isActive: false })
-        .where(
-          and(
-            eq(apiKeys.userId, ctx.userId),
-            eq(apiKeys.provider, provider)
+      // Atomic operation: Deactivate all other keys for this provider, then insert new key
+      // The unique partial index prevents multiple active keys even with concurrent requests
+      try {
+        // First, deactivate all existing keys for this user/provider
+        await ctx.db
+          .update(apiKeys)
+          .set({ isActive: false })
+          .where(
+            and(
+              eq(apiKeys.userId, ctx.userId),
+              eq(apiKeys.provider, provider)
+            )
           )
-        )
 
-      // Create new API key
-      const [newKey] = await ctx.db
-        .insert(apiKeys)
-        .values({
-          userId: ctx.userId,
-          provider,
-          encryptedKey,
-          keyPrefix: prefix,
-          keySuffix: suffix,
-          isActive: true,
-        })
-        .returning()
+        // Then insert the new active key
+        // If a concurrent request also tries to insert, the unique partial index
+        // will prevent it, and we'll catch the error below
+        const [newKey] = await ctx.db
+          .insert(apiKeys)
+          .values({
+            userId: ctx.userId,
+            provider,
+            encryptedKey,
+            keyPrefix: prefix,
+            keySuffix: suffix,
+            isActive: true,
+          })
+          .returning()
 
-      return {
-        id: newKey.id,
-        provider: newKey.provider,
-        keyPrefix: newKey.keyPrefix,
-        keySuffix: newKey.keySuffix,
-        isActive: newKey.isActive,
-        createdAt: newKey.createdAt,
+        return {
+          id: newKey.id,
+          provider: newKey.provider,
+          keyPrefix: newKey.keyPrefix,
+          keySuffix: newKey.keySuffix,
+          isActive: newKey.isActive,
+          createdAt: newKey.createdAt,
+        }
+      } catch (error) {
+        // Handle unique constraint violation from concurrent requests
+        // If another request already created an active key, deactivate it and retry
+        if (
+          error instanceof Error &&
+          (error.message.includes("unique") ||
+            error.message.includes("duplicate") ||
+            error.message.includes("violates unique constraint"))
+        ) {
+          // Deactivate any active keys that might have been created concurrently
+          await ctx.db
+            .update(apiKeys)
+            .set({ isActive: false })
+            .where(
+              and(
+                eq(apiKeys.userId, ctx.userId),
+                eq(apiKeys.provider, provider),
+                eq(apiKeys.isActive, true)
+              )
+            )
+
+          // Retry the insert once
+          const [newKey] = await ctx.db
+            .insert(apiKeys)
+            .values({
+              userId: ctx.userId,
+              provider,
+              encryptedKey,
+              keyPrefix: prefix,
+              keySuffix: suffix,
+              isActive: true,
+            })
+            .returning()
+
+          return {
+            id: newKey.id,
+            provider: newKey.provider,
+            keyPrefix: newKey.keyPrefix,
+            keySuffix: newKey.keySuffix,
+            isActive: newKey.isActive,
+            createdAt: newKey.createdAt,
+          }
+        }
+        throw error
       }
     }),
 
@@ -196,30 +246,93 @@ export const apiKeysRouter = createTRPCRouter({
         })
       }
 
-      // Deactivate all keys for this provider
-      await ctx.db
-        .update(apiKeys)
-        .set({ isActive: false })
-        .where(
-          and(
-            eq(apiKeys.userId, ctx.userId),
-            eq(apiKeys.provider, existingKey.provider)
-          )
-        )
+      // Atomic operation: Deactivate all keys for this provider, then activate the selected one
+      // Wrapped in a transaction to prevent race conditions
+      try {
+        const updatedKey = await ctx.db.transaction(async (tx) => {
+          // First, deactivate all existing keys for this user/provider
+          await tx
+            .update(apiKeys)
+            .set({ isActive: false })
+            .where(
+              and(
+                eq(apiKeys.userId, ctx.userId),
+                eq(apiKeys.provider, existingKey.provider)
+              )
+            )
 
-      // Activate the selected key
-      const [updatedKey] = await ctx.db
-        .update(apiKeys)
-        .set({ isActive: true })
-        .where(eq(apiKeys.id, input.id))
-        .returning()
+          // Then activate the selected key with tightened WHERE clause
+          // Include userId and provider to ensure only the user's key is activated
+          const [result] = await tx
+            .update(apiKeys)
+            .set({ isActive: true })
+            .where(
+              and(
+                eq(apiKeys.id, input.id),
+                eq(apiKeys.userId, ctx.userId),
+                eq(apiKeys.provider, existingKey.provider)
+              )
+            )
+            .returning()
 
-      return {
-        id: updatedKey.id,
-        provider: updatedKey.provider,
-        keyPrefix: updatedKey.keyPrefix,
-        keySuffix: updatedKey.keySuffix,
-        isActive: updatedKey.isActive,
+          return result
+        })
+
+        return {
+          id: updatedKey.id,
+          provider: updatedKey.provider,
+          keyPrefix: updatedKey.keyPrefix,
+          keySuffix: updatedKey.keySuffix,
+          isActive: updatedKey.isActive,
+        }
+      } catch (error) {
+        // Handle unique constraint violation from concurrent requests
+        // If another request already activated a key, deactivate it and retry
+        if (
+          error instanceof Error &&
+          (error.message.includes("unique") ||
+            error.message.includes("duplicate") ||
+            error.message.includes("violates unique constraint"))
+        ) {
+          // Retry with transaction: deactivate all, then activate the selected key
+          const updatedKey = await ctx.db.transaction(async (tx) => {
+            // Deactivate any active keys that might have been activated concurrently
+            await tx
+              .update(apiKeys)
+              .set({ isActive: false })
+              .where(
+                and(
+                  eq(apiKeys.userId, ctx.userId),
+                  eq(apiKeys.provider, existingKey.provider),
+                  eq(apiKeys.isActive, true)
+                )
+              )
+
+            // Retry activating the selected key with tightened WHERE clause
+            const [result] = await tx
+              .update(apiKeys)
+              .set({ isActive: true })
+              .where(
+                and(
+                  eq(apiKeys.id, input.id),
+                  eq(apiKeys.userId, ctx.userId),
+                  eq(apiKeys.provider, existingKey.provider)
+                )
+              )
+              .returning()
+
+            return result
+          })
+
+          return {
+            id: updatedKey.id,
+            provider: updatedKey.provider,
+            keyPrefix: updatedKey.keyPrefix,
+            keySuffix: updatedKey.keySuffix,
+            isActive: updatedKey.isActive,
+          }
+        }
+        throw error
       }
     }),
 

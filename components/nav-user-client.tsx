@@ -9,7 +9,9 @@ import {
   Sparkles,
 } from "lucide-react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { signOut } from "@/lib/auth/client"
+import { toast } from "sonner"
 import {
   Avatar,
   AvatarFallback,
@@ -41,9 +43,34 @@ interface NavUserClientProps {
 
 export const NavUserClient = ({ user }: NavUserClientProps) => {
   const { isMobile } = useSidebar()
+  const router = useRouter()
+
+  const getAvatarFallback = (): string => {
+    const trimmedName = (user.name || "").trim()
+    if (trimmedName.length > 0) {
+      return trimmedName[0].toUpperCase()
+    }
+    const trimmedEmail = (user.email || "").trim()
+    if (trimmedEmail.length > 0) {
+      return trimmedEmail[0].toUpperCase()
+    }
+    return "U"
+  }
 
   const handleLogout = async () => {
-    await signOut()
+    try {
+      await signOut({
+        router,
+        onError: (error) => {
+          console.error("Failed to sign out:", error)
+          toast.error("Failed to sign out", {
+            description: "An error occurred while signing out. Please try again.",
+          })
+        },
+      })
+    } catch (error) {
+      // Error already handled by onError callback
+    }
   }
 
   return (
@@ -58,7 +85,7 @@ export const NavUserClient = ({ user }: NavUserClientProps) => {
               <Avatar className="h-8 w-8 rounded-lg">
                 <AvatarImage src={user.avatar} alt={user.name} />
                 <AvatarFallback className="rounded-lg">
-                  {user.name.charAt(0).toUpperCase()}
+                  {getAvatarFallback()}
                 </AvatarFallback>
               </Avatar>
               <div className="grid flex-1 text-left text-sm leading-tight">
@@ -79,7 +106,7 @@ export const NavUserClient = ({ user }: NavUserClientProps) => {
                 <Avatar className="h-8 w-8 rounded-lg">
                   <AvatarImage src={user.avatar} alt={user.name} />
                   <AvatarFallback className="rounded-lg">
-                    {user.name.charAt(0).toUpperCase()}
+                    {getAvatarFallback()}
                   </AvatarFallback>
                 </Avatar>
                 <div className="grid flex-1 text-left text-sm leading-tight">

@@ -1,4 +1,4 @@
-// Enforces server-side authentication; redirects to /login if unauthenticated.
+// Enforces server-side authentication; throws error if unauthenticated.
 import { getServerUser } from './getServerUser'
 
 export const requireServerUser = async (): Promise<{ id: string; isEnabled: boolean }> => {

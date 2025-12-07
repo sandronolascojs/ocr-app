@@ -14,7 +14,8 @@ import {
 import { InngestEvents, JobsStatus, JobStep, ApiKeyProvider } from "@/types";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
-import { and, count, desc, eq, isNotNull, or } from "drizzle-orm";
+import { and, count, desc, eq, isNotNull, like, or } from "drizzle-orm";
+import { QUERY_CONFIG } from "@/constants/query.constants";
 
 export const ocrRouter = createTRPCRouter({
   uploadZip: protectedProcedure
@@ -140,10 +141,34 @@ export const ocrRouter = createTRPCRouter({
         jobId: z.string(),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { jobId } = input;
-      const zipKey = getJobZipKey(jobId);
 
+      // Load job metadata by jobId
+      const [job] = await ctx.db
+        .select()
+        .from(ocrJobs)
+        .where(eq(ocrJobs.jobId, jobId))
+        .limit(1);
+
+      // Handle missing job
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Job not found",
+        });
+      }
+
+      // Verify ownership
+      if (job.userId !== ctx.userId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have permission to delete this job",
+        });
+      }
+
+      // Delete the uploaded file
+      const zipKey = getJobZipKey(jobId);
       try {
         await deleteObjectIfExists(zipKey);
         return { jobId, deleted: true };
@@ -192,14 +217,21 @@ export const ocrRouter = createTRPCRouter({
     .input(
       z
         .object({
-          limit: z.number().min(1).max(100).default(10),
-          offset: z.number().min(0).default(0),
+          limit: z
+            .number()
+            .min(QUERY_CONFIG.PAGINATION.MIN_LIMIT)
+            .max(QUERY_CONFIG.PAGINATION.MAX_LIMIT)
+            .default(QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT),
+          offset: z
+            .number()
+            .min(QUERY_CONFIG.PAGINATION.MIN_OFFSET)
+            .default(QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET),
         })
         .optional()
     )
     .query(async ({ ctx, input }) => {
-      const limit = input?.limit ?? 10;
-      const offset = input?.offset ?? 0;
+      const limit = input?.limit ?? QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT;
+      const offset = input?.offset ?? QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET;
 
       const whereCondition = eq(ocrJobs.userId, ctx.userId);
 
@@ -496,6 +528,141 @@ export const ocrRouter = createTRPCRouter({
     return documents;
   }),
 
+  listDocuments: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z
+            .number()
+            .min(QUERY_CONFIG.PAGINATION.MIN_LIMIT)
+            .max(QUERY_CONFIG.PAGINATION.MAX_LIMIT)
+            .default(QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT),
+          offset: z
+            .number()
+            .min(QUERY_CONFIG.PAGINATION.MIN_OFFSET)
+            .default(QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET),
+          type: z
+            .enum(["txt", "docx", "all"])
+            .optional()
+            .default(QUERY_CONFIG.DOCUMENTS.DEFAULT_TYPE),
+          jobId: z.string().optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT;
+      const offset = input?.offset ?? QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET;
+      const documentType = input?.type ?? QUERY_CONFIG.DOCUMENTS.DEFAULT_TYPE;
+      const jobIdFilter = input?.jobId?.trim();
+
+      // Build base where condition
+      const baseConditions = [
+        eq(ocrJobs.userId, ctx.userId),
+        or(isNotNull(ocrJobs.txtPath), isNotNull(ocrJobs.docxPath)),
+      ];
+
+      // Add jobId filter if provided
+      if (jobIdFilter) {
+        baseConditions.push(like(ocrJobs.jobId, `%${jobIdFilter}%`));
+      }
+
+      // Get all matching jobs
+      const jobs = await ctx.db
+        .select()
+        .from(ocrJobs)
+        .where(and(...baseConditions))
+        .orderBy(desc(ocrJobs.createdAt));
+
+      // Build documents array
+      const documents: Array<{
+        jobId: string;
+        type: "txt" | "docx";
+        sizeBytes: number | null;
+        url: SignedDownloadUrl | null;
+        filesExist: boolean;
+        thumbnailUrl: SignedDownloadUrl | null;
+        thumbnailKey: string | null;
+        createdAt: Date | null;
+        updatedAt: Date | null;
+      }> = [];
+
+      for (const job of jobs) {
+        // Get thumbnail for this job (shared across both txt and docx documents)
+        let thumbnailUrl: SignedDownloadUrl | null = null;
+        let thumbnailKey: string | null = job.thumbnailKey ?? null;
+
+        if (job.thumbnailKey) {
+          const thumbnailExists = await ensureObjectExists(job.thumbnailKey);
+          if (thumbnailExists) {
+            thumbnailUrl = await createSignedThumbnailUrl(job.thumbnailKey);
+          }
+        }
+
+        // Add txt document if exists and matches filter
+        if (job.txtPath && (documentType === "all" || documentType === "txt")) {
+          const exists = await ensureObjectExists(job.txtPath);
+          const url = exists
+            ? await createSignedDownloadUrl({
+                key: job.txtPath,
+                responseContentType: "text/plain",
+                downloadFilename: `${job.jobId}.txt`,
+              })
+            : null;
+
+          documents.push({
+            jobId: job.jobId,
+            type: "txt",
+            sizeBytes: job.txtSizeBytes ?? null,
+            url,
+            filesExist: exists,
+            thumbnailUrl,
+            thumbnailKey,
+            createdAt: job.createdAt,
+            updatedAt: job.updatedAt,
+          });
+        }
+
+        // Add docx document if exists and matches filter
+        if (
+          job.docxPath &&
+          (documentType === "all" || documentType === "docx")
+        ) {
+          const exists = await ensureObjectExists(job.docxPath);
+          const url = exists
+            ? await createSignedDownloadUrl({
+                key: job.docxPath,
+                responseContentType:
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                downloadFilename: `${job.jobId}.docx`,
+              })
+            : null;
+
+          documents.push({
+            jobId: job.jobId,
+            type: "docx",
+            sizeBytes: job.docxSizeBytes ?? null,
+            url,
+            filesExist: exists,
+            thumbnailUrl,
+            thumbnailKey,
+            createdAt: job.createdAt,
+            updatedAt: job.updatedAt,
+          });
+        }
+      }
+
+      // Apply pagination to the documents array
+      const total = documents.length;
+      const paginatedDocuments = documents.slice(offset, offset + limit);
+
+      return {
+        documents: paginatedDocuments,
+        total,
+        limit,
+        offset,
+      };
+    }),
+
   getAllImages: protectedProcedure.query(async ({ ctx }) => {
     const jobs = await ctx.db
       .select()
@@ -556,6 +723,95 @@ export const ocrRouter = createTRPCRouter({
 
     return images;
   }),
+
+  listImages: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z
+            .number()
+            .min(QUERY_CONFIG.PAGINATION.MIN_LIMIT)
+            .max(QUERY_CONFIG.PAGINATION.MAX_LIMIT)
+            .default(QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT),
+          offset: z
+            .number()
+            .min(QUERY_CONFIG.PAGINATION.MIN_OFFSET)
+            .default(QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT;
+      const offset = input?.offset ?? QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET;
+
+      const jobs = await ctx.db
+        .select()
+        .from(ocrJobs)
+        .where(and(eq(ocrJobs.userId, ctx.userId), isNotNull(ocrJobs.rawZipPath)))
+        .orderBy(desc(ocrJobs.createdAt));
+
+      const images: Array<{
+        jobId: string;
+        thumbnailUrl: SignedDownloadUrl | null;
+        thumbnailKey: string | null;
+        zipUrl: SignedDownloadUrl | null;
+        sizeBytes: number | null;
+        filesExist: {
+          thumbnail: boolean;
+          zip: boolean;
+        };
+        createdAt: Date | null;
+        updatedAt: Date | null;
+      }> = [];
+
+      for (const job of jobs) {
+        if (!job.rawZipPath) continue;
+
+        const zipExists = await ensureObjectExists(job.rawZipPath);
+        const zipUrl = zipExists
+          ? await createSignedDownloadUrl({
+              key: job.rawZipPath,
+              responseContentType: "application/zip",
+              downloadFilename: `${job.jobId}-raw.zip`,
+            })
+          : null;
+
+        let thumbnailUrl: SignedDownloadUrl | null = null;
+        let thumbnailExists = false;
+
+        if (job.thumbnailKey) {
+          thumbnailExists = await ensureObjectExists(job.thumbnailKey);
+          if (thumbnailExists) {
+            thumbnailUrl = await createSignedThumbnailUrl(job.thumbnailKey);
+          }
+        }
+
+        images.push({
+          jobId: job.jobId,
+          thumbnailUrl,
+          thumbnailKey: job.thumbnailKey ?? null,
+          zipUrl,
+          sizeBytes: job.rawZipSizeBytes ?? null,
+          filesExist: {
+            thumbnail: thumbnailExists,
+            zip: zipExists,
+          },
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+        });
+      }
+
+      // Apply pagination to the images array
+      const total = images.length;
+      const paginatedImages = images.slice(offset, offset + limit);
+
+      return {
+        images: paginatedImages,
+        total,
+        limit,
+        offset,
+      };
+    }),
 
   getStorageStats: protectedProcedure.query(async ({ ctx }) => {
     const jobs = await ctx.db
@@ -720,7 +976,15 @@ export const ocrRouter = createTRPCRouter({
       }
     }
 
-    // Update all jobs to clear paths
+    // Guard: ensure userId exists before running update
+    if (!ctx.userId) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "User ID is required to update jobs",
+      });
+    }
+
+    // Update all jobs to clear paths - restricted to current user's jobs only
     await ctx.db
       .update(ocrJobs)
       .set({
@@ -731,7 +995,8 @@ export const ocrRouter = createTRPCRouter({
         txtSizeBytes: null,
         docxSizeBytes: null,
         rawZipSizeBytes: null,
-      });
+      })
+      .where(eq(ocrJobs.userId, ctx.userId));
 
     return {
       deletedCount,

@@ -17,7 +17,7 @@ import { Separator } from "@/components/ui/separator"
 import { formatBytes } from "@/lib/utils"
 import { ApiKeysView } from "./ApiKeysView"
 import { useDialogStore } from "@/store/dialogs"
-import { useStorageStats } from "@/hooks/http"
+import { useStorageStats } from "@/hooks/http/useStorageStats"
 
 interface SettingsViewProps {}
 

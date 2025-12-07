@@ -4,6 +4,7 @@ import { useQueryStates } from "nuqs";
 import { useMemo } from "react";
 import { paginationParsers } from "@/lib/pagination/searchParams";
 import type { PaginationResult, PaginationConfig } from "@/types/pagination";
+import { QUERY_CONFIG } from "@/constants/query.constants";
 
 interface UsePaginationOptions extends PaginationConfig {
   key?: string;
@@ -14,8 +15,8 @@ export const usePagination = (
 ): PaginationResult => {
   const {
     key = "page",
-    minPageSize = 1,
-    maxPageSize = 100,
+    minPageSize = QUERY_CONFIG.PAGINATION.MIN_LIMIT,
+    maxPageSize = QUERY_CONFIG.PAGINATION.MAX_LIMIT,
   } = options ?? {};
 
   const [{ pageIndex, pageSize }, setPagination] = useQueryStates(

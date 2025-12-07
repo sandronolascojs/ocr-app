@@ -21,6 +21,10 @@ export const DeleteApiKeyDialog = () => {
     onSuccess: () => {
       setDeleteApiKeyDialogOpen(null)
     },
+    onError: (error) => {
+      // Show error toast/message to user
+      console.error("Failed to delete API key:", error)
+    },
   })
 
   const handleDelete = () => {

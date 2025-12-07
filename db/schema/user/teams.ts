@@ -1,13 +1,15 @@
 import { relations } from 'drizzle-orm';
-import { pgTable, text } from 'drizzle-orm/pg-core';
+import { pgTable, text, unique } from 'drizzle-orm/pg-core';
 import { users } from './users';
-import { createdAt, createIdField, updatedAt } from '../utils';
+import { createdAt, createIdField, updatedAt, teamRoleEnum } from '../utils';
+import { TeamRole } from '@/types/enums/teamRole.enum';
 
 export const teams = pgTable('teams', {
   id: createIdField({ name: 'id' }),
   name: text('name').notNull(),
   ownerId: text('owner_id')
     .notNull()
+    .unique()
     .references(() => users.id, { onDelete: 'cascade' }),
   createdAt,
   updatedAt,
@@ -21,10 +23,11 @@ export const teamMembers = pgTable('team_members', {
   userId: text('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  role: text('role').notNull().default('member'), // 'owner' | 'admin' | 'member'
+  role: teamRoleEnum('role').notNull().default(TeamRole.MEMBER),
   createdAt,
   updatedAt,
-});
+}, (table) => [unique('team_members_unique_team_user').on(table.teamId, table.userId),
+]);
 
 export const teamRelations = relations(teams, ({ one, many }) => ({
   owner: one(users, {

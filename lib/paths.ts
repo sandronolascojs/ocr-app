@@ -1,20 +1,22 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { env } from "@/env.mjs";
 
 /**
  * Gets a unique instance identifier for multi-instance isolation.
  * Uses INSTANCE_ID environment variable if provided, otherwise generates
- * a stable identifier based on hostname and process ID.
+ * a cryptographically strong UUID to ensure uniqueness across instances.
  */
 function getInstanceId(): string {
   if (process.env.INSTANCE_ID) {
     return process.env.INSTANCE_ID;
   }
-  // Generate a stable instance ID based on hostname and process ID
-  // This ensures isolation between different processes/instances
-  return `${os.hostname()}-${process.pid}`;
+  // Generate a cryptographically strong UUID for each instance
+  // This ensures unique isolation between different processes/instances
+  // and prevents collisions in container/serverless environments
+  return crypto.randomUUID();
 }
 
 /**
@@ -52,14 +54,28 @@ function validateAndEnsureDirectory(dirPath: string): string {
     fs.mkdirSync(absolutePath, { recursive: true });
 
     // Verify write permissions
+    const testFile = path.join(absolutePath, ".write-test");
+
+    // Attempt to write test file - if this fails, directory is not writable
     try {
-      const testFile = path.join(absolutePath, ".write-test");
       fs.writeFileSync(testFile, "test");
-      fs.unlinkSync(testFile);
     } catch (error) {
       throw new Error(
         `Directory is not writable: ${absolutePath}. Please check permissions.`,
       );
+    }
+
+    // Cleanup test file - wrap in try-catch to prevent file leak
+    // Unlink failures should not abort successful validation
+    try {
+      fs.unlinkSync(testFile);
+    } catch (unlinkError) {
+      // Log unlink failure but don't throw - validation succeeded
+      console.warn(
+        `Failed to cleanup test file ${testFile}: ${unlinkError instanceof Error ? unlinkError.message : String(unlinkError)}`,
+      );
+      // If write succeeded but unlink failed, we still have a valid writable directory
+      // The test file will remain but validation is still successful
     }
 
     return absolutePath;
@@ -205,15 +221,43 @@ function getVolumeDirs(): VolumeDirs {
  * - The filesystem may not be available or writable at that point
  * - Each property access triggers initialization only when actually needed
  *
+ * The Proxy implements enumeration support, so operations like Object.keys(),
+ * Object.entries(), spread operator, and the `in` operator work as expected.
+ *
  * @example
  * // First access initializes the directories
  * const imagesDir = VOLUME_DIRS.imagesBase; // Initialization happens here
  * const txtDir = VOLUME_DIRS.txtBase; // Uses cached value
+ *
+ * // Enumeration operations work correctly
+ * const keys = Object.keys(VOLUME_DIRS); // ['base', 'imagesBase', 'txtBase', 'wordBase', 'tmpBase']
+ * const entries = Object.entries(VOLUME_DIRS); // [['base', '...'], ...]
+ * const spread = { ...VOLUME_DIRS }; // Creates a plain object with all properties
+ * const hasBase = 'base' in VOLUME_DIRS; // true
  */
 export const VOLUME_DIRS = new Proxy({} as VolumeDirs, {
   get(_target, prop) {
     const dirs = getVolumeDirs();
     return dirs[prop as keyof VolumeDirs];
+  },
+  ownKeys(_target) {
+    const dirs = getVolumeDirs();
+    return Reflect.ownKeys(dirs);
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    const dirs = getVolumeDirs();
+    if (prop in dirs) {
+      return {
+        enumerable: true,
+        configurable: true,
+        value: dirs[prop as keyof VolumeDirs],
+      };
+    }
+    return undefined;
+  },
+  has(_target, prop) {
+    const dirs = getVolumeDirs();
+    return prop in dirs;
   },
 });
 

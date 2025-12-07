@@ -24,7 +24,6 @@ interface NavMainProps {
     title: string
     url: string
     icon?: LucideIcon
-    isActive?: boolean
     items?: {
       title: string
       url: string
@@ -53,8 +52,7 @@ export const NavMain = ({ items }: NavMainProps) => {
 
           return item.items && item.items.length > 0 ? (
             <Collapsible
-              key={`${item.title}-${pathname}`}
-              asChild
+              key={item.url}
               defaultOpen={groupActive}
               className="group/collapsible"
             >
@@ -68,13 +66,13 @@ export const NavMain = ({ items }: NavMainProps) => {
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <SidebarMenuSub className="mr-0 pr-0">
-                    {item.items?.map((sub) => {
+                    {item.items?.map((sub, index) => {
                       const subPath = sub.url.split("?")[0]
                       // Exact match only - don't match parent paths
                       const isActive = subPath === currentPath
 
                       return (
-                        <SidebarMenuSubItem key={sub.title}>
+                        <SidebarMenuSubItem key={sub.url || `sub-item-${index}`}>
                           <SidebarMenuSubButton
                             asChild
                             isActive={isActive}

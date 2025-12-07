@@ -33,6 +33,7 @@ export const LoginView = () => {
   });
 
   async function onSubmit(values: LoginFormValues) {
+    try {
       await authClient.signIn.email({
         email: values.email,
         password: values.password,
@@ -42,16 +43,32 @@ export const LoginView = () => {
           router.replace("/");
         },
         onError: (error) => {
-          if (error.error.message.includes("Email not verified")) {
+          const errorMessage = error?.error?.message;
+          
+          if (errorMessage?.includes("Email not verified")) {
             return router.replace("/email-otp");
           }
-          if (error.error.message.includes("Invalid email or password")) {
+          if (errorMessage?.includes("Invalid email or password")) {
             toast.error("Invalid email or password");
           } else {
             toast.error("Sign in failed");
           }
         },
       });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      if (errorMessage?.includes("Email not verified")) {
+        router.replace("/email-otp");
+        return;
+      }
+      if (errorMessage?.includes("Invalid email or password")) {
+        toast.error("Invalid email or password");
+      } else {
+        console.error("Unexpected sign in error:", error);
+        toast.error("Sign in failed");
+      }
+    }
   }
 
   function signInWithGoogle() {

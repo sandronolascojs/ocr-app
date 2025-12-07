@@ -733,13 +733,29 @@ export const processOcrJob = inngest.createFunction(
 
     if (!userId) {
       console.error("UserId missing in event data", event.data);
+      
+      try {
+        await db
+          .update(ocrJobs)
+          .set({
+            status: JobsStatus.ERROR,
+            error: "UserId missing in event data",
+          })
+          .where(eq(ocrJobs.jobId, jobId));
+      } catch (updateError) {
+        console.error(
+          `Failed to update job ${jobId} to ERROR state:`,
+          updateError
+        );
+      }
+      
       return { jobId, txtKey: "", docxKey: "", rawZipKey: null };
     }
 
-    // Get user's OpenAI client
-    const openai = await getUserOpenAIClient(userId);
-
     try {
+      // Get user's OpenAI client
+      const openai = await getUserOpenAIClient(userId);
+
       const [job] = await db
         .select()
         .from(ocrJobs)

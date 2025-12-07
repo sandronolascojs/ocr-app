@@ -21,8 +21,14 @@ import { useCountdown } from '@/hooks/ui/useCountdown'
 import { useEffect } from 'react'
 
 const schema = z.object({
-  code: z.string().min(6, 'Enter the 6-digit code'),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
+  code: z
+    .string()
+    .length(6, 'Enter the 6-digit code')
+    .regex(/^\d+$/, 'Code must contain only digits'),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(128, 'Password must be at most 128 characters'),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -91,13 +97,37 @@ export const ResetPasswordConfirmView = () => {
         toast.success('Password updated')
         router.replace('/login')
       } catch (error: unknown) {
-        const errorMessage =
-          error instanceof Error ? error.message : 'Failed to update password'
-        if (
-          errorMessage.includes('Invalid') ||
-          errorMessage.includes('expired') ||
-          errorMessage.includes('invalid')
-        ) {
+        console.error('Password reset error:', error)
+
+        // Check for structured error properties first
+        let isInvalidOrExpired = false
+        if (error && typeof error === 'object') {
+          if ('code' in error) {
+            const code = String(error.code)
+            isInvalidOrExpired =
+              code === 'INVALID_TOKEN' ||
+              code === 'EXPIRED_TOKEN' ||
+              code === 'TOKEN_EXPIRED' ||
+              code === 'INVALID_OTP' ||
+              code === 'EXPIRED_OTP'
+          }
+          if (!isInvalidOrExpired && 'status' in error) {
+            const status = Number(error.status)
+            isInvalidOrExpired = status === 400 || status === 401 || status === 403
+          }
+        }
+
+        // Fall back to message substring checks if structured checks didn't match
+        if (!isInvalidOrExpired) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error ?? '')
+          const normalizedMessage = errorMessage.toLowerCase()
+          isInvalidOrExpired =
+            normalizedMessage.includes('invalid') ||
+            normalizedMessage.includes('expired')
+        }
+
+        if (isInvalidOrExpired) {
           toast.error('The reset code is invalid or has expired')
         } else {
           toast.error('Failed to update password')

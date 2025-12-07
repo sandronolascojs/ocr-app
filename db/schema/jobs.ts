@@ -1,4 +1,4 @@
-import { integer, pgTable, text } from "drizzle-orm/pg-core";
+import { bigint, integer, pgTable, text } from "drizzle-orm/pg-core";
 import { createdAt, createIdField, jobStatusEnum, jobStepEnum, updatedAt } from "./utils";
 import { JobsStatus } from "@/types";
 import { JobStep } from "@/types/enums/jobs/jobStep.enum";
@@ -31,9 +31,9 @@ export const ocrJobs = pgTable("ocr_jobs", {
   processedImages: integer("processed_images").notNull().default(0),
 
   // Storage tracking
-  txtSizeBytes: integer("txt_size_bytes"),
-  docxSizeBytes: integer("docx_size_bytes"),
-  rawZipSizeBytes: integer("raw_zip_size_bytes"),
+  txtSizeBytes: bigint("txt_size_bytes", { mode: "number" }),
+  docxSizeBytes: bigint("docx_size_bytes", { mode: "number" }),
+  rawZipSizeBytes: bigint("raw_zip_size_bytes", { mode: "number" }),
   thumbnailKey: text("thumbnail_key"),
 
   createdAt,

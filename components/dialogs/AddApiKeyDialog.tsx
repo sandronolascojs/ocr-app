@@ -46,6 +46,17 @@ export const AddApiKeyDialog = () => {
       setAddApiKeyDialogOpen(false)
       form.reset()
     },
+    onError: (error) => {
+      // Log error for debugging
+      console.error("Failed to create API key:", error)
+      
+      // Set form error for user-facing feedback
+      const errorMessage = error.message || "Failed to add API key. Please try again."
+      form.setError("key", {
+        type: "server",
+        message: errorMessage,
+      })
+    },
   })
 
   const onSubmit = form.handleSubmit((values) => {

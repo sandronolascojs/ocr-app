@@ -7,17 +7,15 @@ export const NavUser = async () => {
     headers: await headers(),
   })
 
-  const user = session?.user
-    ? {
-        name: session.user.name ?? "User",
-        email: session.user.email ?? "",
-        avatar: session.user.image ?? "/avatars/user.jpg",
-      }
-    : {
-        name: "User",
-        email: "user@example.com",
-        avatar: "/avatars/user.jpg",
-      }
+  if (!session?.user) {
+    return null
+  }
+
+  const user = {
+    name: session.user.name ?? "User",
+    email: session.user.email ?? "",
+    avatar: session.user.image ?? "/avatars/user.jpg",
+  }
 
   return <NavUserClient user={user} />
 }

@@ -65,7 +65,7 @@ export const PrivateHeader = () => {
                   const name = getBreadcrumbName(segment)
 
                   return (
-                    <React.Fragment key={segment}>
+                    <React.Fragment key={`${segment}-${index}`}>
                       <BreadcrumbItem>
                         {isLast ? (
                           <BreadcrumbPage>{name}</BreadcrumbPage>

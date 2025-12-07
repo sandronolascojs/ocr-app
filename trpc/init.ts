@@ -1,6 +1,7 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { cache } from 'react';
 import superjson from 'superjson';
+import { z } from 'zod';
 import { getServerUser } from '@/server/auth/getServerUser';
 import { db, type DB } from '@/db';
 
@@ -49,7 +50,3 @@ const protectedMiddleware = t.middleware(async ({ ctx, next }) => {
 });
 
 export const protectedProcedure = t.procedure.use(protectedMiddleware);
-
-// Form validation procedure - extends protectedProcedure with Zod validation
-// Use this for mutations that require form validation with React Hook Form
-export const formProcedure = protectedProcedure;

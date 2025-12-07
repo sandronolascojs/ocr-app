@@ -9,13 +9,16 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Lock, Mail, AlertCircle, Sparkles, LogOut } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { signOut } from "@/lib/auth/client"
 
 interface BetaAccessViewProps {}
 
 export const BetaAccessView = ({}: BetaAccessViewProps) => {
+  const router = useRouter()
+
   const handleLogout = async () => {
-    await signOut()
+      await signOut({ router })
   }
 
   return (

@@ -93,9 +93,9 @@ export const BackgroundGradient = ({
           opacity: noiseOpacity.l1,
           backgroundImage:
             "url('data:image/svg+xml;utf8,\
-<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 200\\'>\
-  <filter id=\\'n\\'><feTurbulence type=\\'fractalNoise\\' baseFrequency=\\'4.5\\' numOctaves=\\'5\\' stitchTiles=\\'stitch\\'/></filter>\
-  <rect width=\\'100%\\' height=\\'100%\\' filter=\\'url(%23n)\\' opacity=\\'0.31\\'/>\
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'>\
+  <filter id='n'><feTurbulence type='fractalNoise' baseFrequency='4.5' numOctaves='5' stitchTiles='stitch'/></filter>\
+  <rect width='100%' height='100%' filter='url(%23n)' opacity='0.31'/>\
 </svg>')",
           backgroundRepeat: "repeat",
           filter: "grayscale(1) contrast(150%)",
@@ -107,9 +107,9 @@ export const BackgroundGradient = ({
           opacity: noiseOpacity.l2,
           backgroundImage:
             "url('data:image/svg+xml;utf8,\
-<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 200\\'>\
-  <filter id=\\'n2\\'><feTurbulence type=\\'fractalNoise\\' baseFrequency=\\'2.2\\' numOctaves=\\'4\\' stitchTiles=\\'stitch\\'/></filter>\
-  <rect width=\\'100%\\' height=\\'100%\\' filter=\\'url(%23n2)\\' opacity=\\'0.27\\'/>\
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'>\
+  <filter id='n2'><feTurbulence type='fractalNoise' baseFrequency='2.2' numOctaves='4' stitchTiles='stitch'/></filter>\
+  <rect width='100%' height='100%' filter='url(%23n2)' opacity='0.27'/>\
 </svg>')",
           backgroundRepeat: "repeat",
         }}
@@ -120,9 +120,9 @@ export const BackgroundGradient = ({
           opacity: noiseOpacity.l3,
           backgroundImage:
             "url('data:image/svg+xml;utf8,\
-<svg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 200 200\\'>\
-  <filter id=\\'n3\\'><feTurbulence type=\\'fractalNoise\\' baseFrequency=\\'1.1\\' numOctaves=\\'2\\' stitchTiles=\\'stitch\\'/></filter>\
-  <rect width=\\'100%\\' height=\\'100%\\' filter=\\'url(%23n3)\\' opacity=\\'0.25\\'/>\
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'>\
+  <filter id='n3'><feTurbulence type='fractalNoise' baseFrequency='1.1' numOctaves='2' stitchTiles='stitch'/></filter>\
+  <rect width='100%' height='100%' filter='url(%23n3)' opacity='0.25'/>\
 </svg>')",
           backgroundRepeat: "repeat",
         }}

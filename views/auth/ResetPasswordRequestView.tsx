@@ -31,6 +31,7 @@ export const ResetPasswordRequestView = () => {
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to send reset email';
         if (errorMessage.includes('Email not found')) {
+          setSent(true);
           toast.success('If an account exists, a reset code has been sent.');
       } else {
         toast.error('Failed to send reset email');

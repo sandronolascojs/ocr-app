@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, unique } from 'drizzle-orm/pg-core';
 import { users } from './users';
 import { createdAt, createIdField, updatedAt } from '../utils';
 
@@ -18,4 +18,6 @@ export const accounts = pgTable('accounts', {
   password: text('password'),
   createdAt,
   updatedAt,
-});
+}, (table) => ({
+  accountProviderUnique: unique('user_accounts_account_provider_unique').on(table.accountId, table.providerId),
+}));

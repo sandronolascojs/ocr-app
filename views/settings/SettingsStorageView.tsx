@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { formatBytes } from "@/lib/utils"
 import { useDialogStore } from "@/store/dialogs"
-import { useStorageStats } from "@/hooks/http"
+import { useStorageStats } from "@/hooks/http/useStorageStats"
 
 interface SettingsStorageViewProps {}
 
