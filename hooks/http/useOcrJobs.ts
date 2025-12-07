@@ -3,24 +3,32 @@ import { trpc } from "@/trpc/client";
 
 type UseOcrJobsOptions = {
   limit?: number;
+  offset?: number;
   enabled?: boolean;
   refetchIntervalMs?: number;
 };
 
 export const useOcrJobs = (options?: UseOcrJobsOptions) => {
   const {
-    limit,
+    limit = QUERY_CONFIG.DEFAULT_PAGINATION.limit,
+    offset = QUERY_CONFIG.DEFAULT_PAGINATION.offset,
     enabled = true,
     refetchIntervalMs = QUERY_CONFIG.REFRESH_INTERVAL_MS,
   } = options ?? {};
 
-  const query = trpc.ocr.listJobs.useQuery(limit ? { limit } : undefined, {
-    enabled,
-    refetchInterval: enabled ? refetchIntervalMs : false,
-  });
+  const query = trpc.ocr.listJobs.useQuery(
+    { limit, offset },
+    {
+      enabled,
+      refetchInterval: enabled ? refetchIntervalMs : false,
+    }
+  );
 
   return {
-    jobs: query.data ?? [],
+    jobs: query.data?.jobs ?? [],
+    total: query.data?.total ?? 0,
+    limit: query.data?.limit ?? limit,
+    offset: query.data?.offset ?? offset,
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error,

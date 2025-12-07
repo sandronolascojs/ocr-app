@@ -5,6 +5,9 @@ export const env = createEnv({
   server: {
     DATABASE_URL: z.string(),
     OPENAI_API_KEY: z.string(),
+    BETTER_AUTH_SECRET: z.string(),
+    BETTER_AUTH_URL: z.url().optional(),
+    API_KEY_ENCRYPTION_SECRET: z.string(),
     CLOUDFLARE_R2_ACCOUNT_ID: z.string(),
     CLOUDFLARE_R2_ACCESS_KEY_ID: z.string(),
     CLOUDFLARE_R2_SECRET_ACCESS_KEY: z.string(),
@@ -20,6 +23,12 @@ export const env = createEnv({
       .int()
       .positive()
       .default(900),
+    OCR_BASE_DIR: z.string().optional(),
+    ALLOWED_ORIGINS: z.string().optional(),
+    RESEND_API_KEY: z.string().optional(),
+    EMAIL_FROM: z.string().optional(),
+    GOOGLE_CLIENT_ID: z.string(),
+    GOOGLE_CLIENT_SECRET: z.string(),
   },
   runtimeEnv: process.env,
   emptyStringAsUndefined: true,

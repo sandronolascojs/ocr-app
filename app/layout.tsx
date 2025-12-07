@@ -1,5 +1,6 @@
 import { ThemeProvider } from "@/components/theme-provider"
 import { TRPCProvider } from "@/trpc/client"
+import { NuqsAdapter } from "nuqs/adapters/next/app"
 import "@/app/globals.css"
 import { Inter } from "next/font/google"
 import type { ReactNode } from "react"
@@ -26,20 +27,18 @@ const RootLayout = ({ children }: RootLayoutProps) => (
         "bg-background font-sans antialiased text-foreground"
       )}
     >
-      <TRPCProvider>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="system"
-          enableSystem
-          disableTransitionOnChange
-        >
-          <div className="flex min-h-screen w-full justify-center bg-background">
-            <main className="flex w-full max-w-6xl flex-1 flex-col px-4 py-10 sm:px-8 lg:px-12">
+        <TRPCProvider>
+          <NuqsAdapter>
+            <ThemeProvider
+              attribute="class"
+              defaultTheme="system"
+              enableSystem
+              disableTransitionOnChange
+            >
               {children}
-            </main>
-          </div>
-        </ThemeProvider>
-      </TRPCProvider>
+            </ThemeProvider>
+          </NuqsAdapter>
+        </TRPCProvider>
     </body>
   </html>
 )

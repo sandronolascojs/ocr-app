@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
+import sharp from "sharp";
 import { inngest } from "@/inngest/client";
 import { db } from "@/db";
 import { ocrJobs, ocrJobFrames } from "@/db/schema";
@@ -31,7 +32,8 @@ import { buildParagraphsFromFrames } from "@/lib/ocr/paragraphs";
 import { JobsStatus } from "@/types";
 import { JobStep } from "@/types/enums/jobs/jobStep.enum";
 import { InngestEvents, OcrStepId, OcrSleepId } from "@/types/enums/inngest";
-import { openai } from "@/lib/openai";
+import { getUserOpenAIClient } from "@/lib/openai-user";
+import type { OpenAI } from "openai";
 import { InngestFunctions } from "@/types/enums/inngest/inngestFunctions.enum";
 import { AI_CONSTANTS } from "@/constants/ai.constants";
 import {
@@ -39,10 +41,11 @@ import {
   getJobDocxKey,
   getJobRawArchiveKey,
   getJobTxtKey,
+  getJobThumbnailKey,
   uploadFileToObject,
 } from "@/lib/storage";
 
-const BATCH_SLEEP_INTERVAL = "60s";
+const BATCH_SLEEP_INTERVAL = "20s";
 
 type ChatCompletionContentPart =
   | string
@@ -203,10 +206,12 @@ const createBatchArtifacts = async ({
   jobId,
   cropsMeta,
   paths,
+  openai,
 }: {
   jobId: string;
   cropsMeta: CropMeta[];
   paths: WorkspacePaths;
+  openai: OpenAI;
 }): Promise<BatchArtifacts> => {
   if (!cropsMeta.length) {
     throw new Error(
@@ -218,6 +223,13 @@ const createBatchArtifacts = async ({
     encoding: "utf8",
   });
 
+  // Register error handler immediately to catch errors from write() calls
+  const streamPromise = new Promise<void>((resolve, reject) => {
+    jsonlStream.on("error", (err) => reject(err));
+    jsonlStream.on("finish", () => resolve());
+  });
+
+  // Write all lines
   for (let index = 0; index < cropsMeta.length; index++) {
     const { filename, cropPath } = cropsMeta[index];
     const dataUrl = await imageFileToDataUrl(cropPath);
@@ -249,10 +261,8 @@ const createBatchArtifacts = async ({
     jsonlStream.write(JSON.stringify(line) + "\n");
   }
 
-  await new Promise<void>((resolve, reject) => {
-    jsonlStream.end(() => resolve());
-    jsonlStream.on("error", (err) => reject(err));
-  });
+  jsonlStream.end();
+  await streamPromise;
 
   const inputFile = await openai.files.create({
     file: fsSync.createReadStream(paths.batchJsonlPath),
@@ -283,10 +293,12 @@ const waitForBatchCompletion = async ({
   jobId,
   batchId,
   sleep,
+  openai,
 }: {
   jobId: string;
   batchId: string;
   sleep: SleepFn;
+  openai: OpenAI;
 }): Promise<string> => {
   let attempt = 0;
   while (true) {
@@ -318,10 +330,12 @@ const saveBatchResults = async ({
   jobId,
   batchOutputFileId,
   totalImages,
+  openai,
 }: {
   jobId: string;
   batchOutputFileId: string;
   totalImages: number;
+  openai: OpenAI;
 }) => {
   const outputStream = await openai.files.content(batchOutputFileId);
   const outputBuffer = Buffer.from(await outputStream.arrayBuffer());
@@ -431,6 +445,66 @@ const saveBatchResults = async ({
     .where(eq(ocrJobs.jobId, jobId));
 };
 
+const generateThumbnail = async ({
+  jobId,
+  paths,
+  thumbnailKey,
+}: {
+  jobId: string;
+  paths: WorkspacePaths;
+  thumbnailKey: string;
+}): Promise<string | null> => {
+  try {
+    const rawImages = await fs.readdir(paths.rawDir).catch(() => []);
+    const normalizedImages = await fs.readdir(paths.normalizedDir).catch(() => []);
+
+    // Prefer raw images, fallback to normalized
+    const imageFiles = rawImages.length > 0 ? rawImages : normalizedImages;
+    const imageDir = rawImages.length > 0 ? paths.rawDir : paths.normalizedDir;
+
+    if (!imageFiles.length) {
+      return null;
+    }
+
+    // Get first image, sorted by filename
+    const sortedImages = imageFiles
+      .filter((file) => /\.(png|jpe?g)$/i.test(file))
+      .sort((a, b) => compareImageFilenames(a, b));
+
+    if (!sortedImages.length) {
+      return null;
+    }
+
+    const firstImagePath = path.join(imageDir, sortedImages[0]);
+    const thumbnailPath = path.join(paths.jobRootDir, "thumbnail.jpg");
+
+    // Generate thumbnail: 200x200px, maintain aspect ratio, fit inside
+    await sharp(firstImagePath)
+      .resize(200, 200, {
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: 85 })
+      .toFile(thumbnailPath);
+
+    // Upload thumbnail to R2
+    await uploadFileToObject({
+      key: thumbnailKey,
+      filePath: thumbnailPath,
+      contentType: "image/jpeg",
+      cacheControl: "public, max-age=31536000, immutable",
+    });
+
+    // Clean up local thumbnail
+    await fs.unlink(thumbnailPath).catch(() => undefined);
+
+    return thumbnailKey;
+  } catch (error) {
+    console.error(`Failed to generate thumbnail for job ${jobId}:`, error);
+    return null;
+  }
+};
+
 const buildDocuments = async ({
   jobId,
   paths,
@@ -458,6 +532,10 @@ const buildDocuments = async ({
 
   await fs.writeFile(paths.txtPath, txtContent, "utf8");
   await writeDocxFromParagraphs(paragraphs, paths.docxPath);
+
+  // Calculate file sizes before uploading
+  const txtStats = fsSync.statSync(paths.txtPath);
+  const docxStats = fsSync.statSync(paths.docxPath);
 
   await uploadFileToObject({
     key: storageKeys.txtKey,
@@ -513,6 +591,7 @@ const buildDocuments = async ({
   const filteredRawImages = await listRawImages();
   let rawZipKey: string | null = storageKeys.rawZipKey;
 
+  let rawZipSizeBytes: number | null = null;
   if (filteredRawImages.length) {
     const archive = new AdmZip();
     filteredRawImages
@@ -522,6 +601,11 @@ const buildDocuments = async ({
       });
     await fs.mkdir(path.dirname(paths.rawArchivePath), { recursive: true });
     await archive.writeZipPromise(paths.rawArchivePath);
+    
+    // Calculate raw zip size
+    const rawZipStats = fsSync.statSync(paths.rawArchivePath);
+    rawZipSizeBytes = rawZipStats.size;
+
     await uploadFileToObject({
       key: storageKeys.rawZipKey,
       filePath: paths.rawArchivePath,
@@ -532,6 +616,15 @@ const buildDocuments = async ({
     rawZipKey = null;
   }
 
+  // Generate thumbnail before cleanup
+  const thumbnailKey = getJobThumbnailKey(jobId);
+  const generatedThumbnailKey = await generateThumbnail({
+    jobId,
+    paths,
+    thumbnailKey,
+  });
+
+  // Update job with all storage info
   await db
     .update(ocrJobs)
     .set({
@@ -539,6 +632,10 @@ const buildDocuments = async ({
       txtPath: storageKeys.txtKey,
       docxPath: storageKeys.docxKey,
       rawZipPath: rawZipKey,
+      txtSizeBytes: txtStats.size,
+      docxSizeBytes: docxStats.size,
+      rawZipSizeBytes: rawZipSizeBytes,
+      thumbnailKey: generatedThumbnailKey,
     })
     .where(eq(ocrJobs.jobId, jobId));
 
@@ -628,7 +725,19 @@ export const processOcrJob = inngest.createFunction(
     docxKey: string;
     rawZipKey: string | null;
   }> => {
-    const { jobId, zipKey } = event.data as { jobId: string; zipKey: string };
+    const { jobId, zipKey, userId } = event.data as {
+      jobId: string;
+      zipKey: string;
+      userId: string;
+    };
+
+    if (!userId) {
+      console.error("UserId missing in event data", event.data);
+      return { jobId, txtKey: "", docxKey: "", rawZipKey: null };
+    }
+
+    // Get user's OpenAI client
+    const openai = await getUserOpenAIClient(userId);
 
     try {
       const [job] = await db
@@ -687,6 +796,7 @@ export const processOcrJob = inngest.createFunction(
                 jobId,
                 cropsMeta,
                 paths: workspacePaths,
+                openai,
               })
           );
           batchId = artifacts.batchId;
@@ -701,6 +811,7 @@ export const processOcrJob = inngest.createFunction(
           jobId,
           batchId,
           sleep: step.sleep,
+          openai,
         });
 
         await db
@@ -728,6 +839,7 @@ export const processOcrJob = inngest.createFunction(
             jobId,
             batchOutputFileId,
             totalImages,
+            openai,
           })
         );
 

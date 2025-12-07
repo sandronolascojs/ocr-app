@@ -1,15 +1,221 @@
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs";
+import { env } from "@/env.mjs";
 
-const BASE_VOLUME_DIR = path.join(os.tmpdir(), "ocr-app");
+/**
+ * Gets a unique instance identifier for multi-instance isolation.
+ * Uses INSTANCE_ID environment variable if provided, otherwise generates
+ * a stable identifier based on hostname and process ID.
+ */
+function getInstanceId(): string {
+  if (process.env.INSTANCE_ID) {
+    return process.env.INSTANCE_ID;
+  }
+  // Generate a stable instance ID based on hostname and process ID
+  // This ensures isolation between different processes/instances
+  return `${os.hostname()}-${process.pid}`;
+}
 
-export const VOLUME_DIRS = {
-  base: BASE_VOLUME_DIR,
-  imagesBase: path.join(BASE_VOLUME_DIR, "image-files"),
-  txtBase: path.join(BASE_VOLUME_DIR, "txt"),
-  wordBase: path.join(BASE_VOLUME_DIR, "word"),
-  tmpBase: path.join(BASE_VOLUME_DIR, "tmp"),
+/**
+ * Gets the persistent application data directory based on the operating system.
+ * - macOS: ~/Library/Application Support/ocr-app
+ * - Linux: ~/.local/share/ocr-app
+ * - Windows: %APPDATA%/ocr-app
+ */
+function getPersistentAppDataDir(): string {
+  const homeDir = os.homedir();
+  const platform = os.platform();
+
+  if (platform === "darwin") {
+    return path.join(homeDir, "Library", "Application Support", "ocr-app");
+  }
+  if (platform === "win32") {
+    const appData = process.env.APPDATA || homeDir;
+    return path.join(appData, "ocr-app");
+  }
+  // Linux and other Unix-like systems
+  return path.join(homeDir, ".local", "share", "ocr-app");
+}
+
+/**
+ * Validates that a directory path is valid and accessible.
+ * Attempts to create the directory (and parent directories) if they don't exist.
+ * @throws Error if the path is invalid or cannot be created
+ */
+function validateAndEnsureDirectory(dirPath: string): string {
+  try {
+    // Resolve to absolute path
+    const absolutePath = path.resolve(dirPath);
+
+    // Ensure the directory exists (recursive will create parent dirs if needed)
+    fs.mkdirSync(absolutePath, { recursive: true });
+
+    // Verify write permissions
+    try {
+      const testFile = path.join(absolutePath, ".write-test");
+      fs.writeFileSync(testFile, "test");
+      fs.unlinkSync(testFile);
+    } catch (error) {
+      throw new Error(
+        `Directory is not writable: ${absolutePath}. Please check permissions.`,
+      );
+    }
+
+    return absolutePath;
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error(`Failed to validate directory: ${dirPath}`);
+  }
+}
+
+/**
+ * Gets the system temporary directory, respecting standard environment variables.
+ * Priority: TMPDIR (Unix) / TEMP (Windows) > TMP > os.tmpdir()
+ * This ensures compatibility with serverless environments like Inngest.
+ */
+function getSystemTempDir(): string {
+  // Respect standard environment variables used in serverless environments
+  // TMPDIR is standard on Unix/Linux, TEMP on Windows
+  const tmpDir =
+    process.env.TMPDIR || process.env.TMP || process.env.TEMP || os.tmpdir();
+  return tmpDir;
+}
+
+/**
+ * Gets the base volume directory for OCR operations.
+ *
+ * Priority:
+ * 1. OCR_BASE_DIR environment variable (if set and valid) - explicit configuration
+ * 2. System temp directory (ephemeral, cleared on reboot) - DEFAULT for serverless
+ *    - Uses TMPDIR/TMP/TEMP environment variables if available (common in serverless)
+ *    - Falls back to os.tmpdir() if not set
+ * 3. Persistent application data directory (fallback when temp validation fails)
+ *
+ * @warning The default behavior uses the system temp directory which is EPHEMERAL.
+ * Data stored in the temp directory will be lost on system reboot, container restart,
+ * or temp cleanup. This is acceptable for serverless environments like Inngest where
+ * files are only used temporarily during processing and then uploaded to persistent
+ * storage (R2 in this case).
+ *
+ * For production deployments requiring data persistence between executions, set
+ * OCR_BASE_DIR to a persistent storage location (e.g., mounted volume, EFS, etc.).
+ *
+ * The base path includes instance isolation to prevent conflicts in multi-instance
+ * deployments. Each instance gets its own subdirectory.
+ */
+function getBaseVolumeDir(): string {
+  let baseDir: string;
+  let usePersistentFallback = false;
+
+  if (env.OCR_BASE_DIR) {
+    // Use explicitly configured directory
+    baseDir = env.OCR_BASE_DIR;
+  } else {
+    // Default to temp directory (ephemeral) - suitable for serverless
+    // Respects TMPDIR/TMP/TEMP environment variables (common in serverless/Inngest)
+    const systemTempDir = getSystemTempDir();
+    baseDir = path.join(systemTempDir, "ocr-app");
+    usePersistentFallback = true; // Enable fallback if temp validation fails
+  }
+
+  // Validate and ensure the base directory exists
+  try {
+    baseDir = validateAndEnsureDirectory(baseDir);
+  } catch (error) {
+    // If validation fails and we're using temp directory, fallback to persistent
+    if (usePersistentFallback) {
+      console.warn(
+        `Failed to use temp directory (${baseDir}), falling back to persistent application data directory.`,
+        error instanceof Error ? error.message : String(error),
+      );
+      baseDir = getPersistentAppDataDir();
+      baseDir = validateAndEnsureDirectory(baseDir);
+    } else {
+      // If OCR_BASE_DIR was explicitly set and validation fails, throw error
+      throw new Error(
+        `Failed to validate OCR_BASE_DIR: ${env.OCR_BASE_DIR}. ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  // Add instance isolation to prevent multi-instance conflicts
+  const instanceId = getInstanceId();
+  const isolatedBaseDir = path.join(baseDir, "instances", instanceId);
+
+  // Ensure the isolated instance directory exists
+  fs.mkdirSync(isolatedBaseDir, { recursive: true });
+
+  return isolatedBaseDir;
+}
+
+/**
+ * Lazy initialization for serverless environments (e.g., Inngest).
+ *
+ * In serverless environments like Inngest:
+ * - The filesystem is ephemeral and may not be available at module load time
+ * - Each function execution may run in a different container/instance
+ * - Temporary files are only needed during processing (download → process → upload to R2)
+ * - Files are automatically cleaned up when the execution completes
+ *
+ * The base directory is computed on first access (when VOLUME_DIRS is first used),
+ * not at module load time. This ensures compatibility with Inngest's execution model.
+ */
+let _BASE_VOLUME_DIR: string | null = null;
+
+type VolumeDirs = {
+  base: string;
+  imagesBase: string;
+  txtBase: string;
+  wordBase: string;
+  tmpBase: string;
 };
+
+let _VOLUME_DIRS_CACHE: VolumeDirs | null = null;
+
+function getBaseVolumeDirLazy(): string {
+  if (_BASE_VOLUME_DIR === null) {
+    _BASE_VOLUME_DIR = getBaseVolumeDir();
+  }
+  return _BASE_VOLUME_DIR;
+}
+
+function getVolumeDirs(): VolumeDirs {
+  if (_VOLUME_DIRS_CACHE === null) {
+    const baseDir = getBaseVolumeDirLazy();
+    _VOLUME_DIRS_CACHE = {
+      base: baseDir,
+      imagesBase: path.join(baseDir, "image-files"),
+      txtBase: path.join(baseDir, "txt"),
+      wordBase: path.join(baseDir, "word"),
+      tmpBase: path.join(baseDir, "tmp"),
+    };
+  }
+  return _VOLUME_DIRS_CACHE;
+}
+
+/**
+ * Volume directories for OCR operations.
+ *
+ * Uses a Proxy to ensure lazy initialization in serverless environments like Inngest.
+ * This prevents filesystem operations at module load time, which is critical because:
+ * - Module loading happens before the function execution context is fully initialized
+ * - The filesystem may not be available or writable at that point
+ * - Each property access triggers initialization only when actually needed
+ *
+ * @example
+ * // First access initializes the directories
+ * const imagesDir = VOLUME_DIRS.imagesBase; // Initialization happens here
+ * const txtDir = VOLUME_DIRS.txtBase; // Uses cached value
+ */
+export const VOLUME_DIRS = new Proxy({} as VolumeDirs, {
+  get(_target, prop) {
+    const dirs = getVolumeDirs();
+    return dirs[prop as keyof VolumeDirs];
+  },
+});
 
 export function getJobRootDir(jobId: string) {
   return path.join(VOLUME_DIRS.imagesBase, jobId);

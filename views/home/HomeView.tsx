@@ -1,631 +1,384 @@
-// app/page.tsx
-"use client";
-
-import * as React from "react";
-import { useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
-import { z } from "zod/v3";
-import { zodResolver } from "@hookform/resolvers/zod";
-
-import { useUploadOcrZip } from "@/hooks/http/useUploadZip";
-import { useOcrJob } from "@/hooks/http/useOcrJob";
-import { useRetryOcrJob } from "@/hooks/http/useRetryOcrJob";
-import { useOcrResult } from "@/hooks/http/useOcrResult";
-import { useOcrJobs } from "@/hooks/http/useOcrJobs";
+"use client"
 
 import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { toast } from "sonner";
-import { JobsStatus, JobStep } from "@/types";
-import { cn } from "@/lib/utils";
+} from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
+import { JobsStatus } from "@/types"
+import { formatBytes } from "@/lib/utils"
+import Link from "next/link"
+import {
+  CheckCircle2,
+  XCircle,
+  Clock,
+  FileText,
+  Image as ImageIcon,
+  HardDrive,
+  ArrowRight,
+} from "lucide-react"
+import { useDashboardMetrics } from "@/hooks/http"
 
-// ---------- Zod schema para el form de upload ----------
+interface HomeViewProps {}
 
-const uploadSchema = z.object({
-  file: z.custom<File>((file) => file instanceof File)
-    .refine((file) => file.name.toLowerCase().endsWith(".zip"), "Only .zip files are allowed").optional(),
-});
+export const HomeView = ({}: HomeViewProps) => {
+  const metricsQuery = useDashboardMetrics()
 
-type UploadFormValues = z.infer<typeof uploadSchema>;
+  const metrics = metricsQuery.data
+  const isLoading = metricsQuery.isLoading
+  const hasError = metricsQuery.isError
 
-// ---------- Helpers UI ----------
+  const totalJobs = metrics?.jobs.total ?? 0
+  const completedJobs = metrics?.jobs.completed ?? 0
+  const failedJobs = metrics?.jobs.failed ?? 0
+  const processingJobs = metrics?.jobs.processing ?? 0
 
-const statusLabel: Record<JobsStatus, string> = {
-  [JobsStatus.PENDING]: "Pending",
-  [JobsStatus.PROCESSING]: "Processing",
-  [JobsStatus.DONE]: "Done",
-  [JobsStatus.ERROR]: "Error",
-};
+  const totalDocuments = metrics?.documents.total ?? 0
+  const txtCount = metrics?.documents.txt ?? 0
+  const docxCount = metrics?.documents.docx ?? 0
 
-const stepLabel: Record<JobStep, string> = {
-  [JobStep.PREPROCESSING]: "1) Preprocessing",
-  [JobStep.BATCH_SUBMITTED]: "2) Batch submitted",
-  [JobStep.RESULTS_SAVED]: "3) Results saved",
-  [JobStep.DOCS_BUILT]: "4) Documents built",
-};
+  const totalImages = metrics?.images.total ?? 0
+  const imagesWithThumbnails = metrics?.images.withThumbnails ?? 0
 
-const statusVariant: Record<JobsStatus, React.ComponentProps<typeof Badge>["variant"]> =
-  {
-    PENDING: "secondary",
-    PROCESSING: "default",
-    DONE: "default",
-    ERROR: "destructive",
-  };
-
-// ---------- Helpers para descargar desde URLs firmadas ----------
-
-const openSignedUrl = (url: string) => {
-  const newWindow = window.open(url, "_blank", "noopener,noreferrer");
-  if (!newWindow) {
-    window.location.href = url;
-  }
-};
-
-// ---------- Página principal ----------
-
-const HomePage = () => {
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
-  const [manualJobId, setManualJobId] = useState("");
-
-  // Form de upload
-  const form = useForm<UploadFormValues>({
-    resolver: zodResolver(uploadSchema),
-    defaultValues: {
-      file: undefined,
-    },
-  });
-
-  const {
-    handleSubmit,
-    setValue,
-    formState: { errors },
-    watch,
-  } = form;
-
-  const selectedFile: File | undefined = watch("file");
-
-  // Mutations / queries
-  const uploadMutation = useUploadOcrZip();
-  const retryMutation = useRetryOcrJob();
-
-  const jobQuery = useOcrJob(currentJobId);
-  const jobsQuery = useOcrJobs({ limit: 25 });
-
-  const job = jobQuery.data;
-  const jobs = jobsQuery.jobs;
-
-  const resultQuery = useOcrResult(
-    currentJobId,
-    job?.status === JobsStatus.DONE && !!job?.hasResults
-  );
-
-  const isProcessing =
-    job?.status === JobsStatus.PENDING || job?.status === JobsStatus.PROCESSING;
-
-  // Handlers
-
-  const onSubmit = handleSubmit(async (values: UploadFormValues) => {
-    try {
-      const file = values.file as File;
-      const { jobId } = await uploadMutation.mutateAsync({ file });
-      setCurrentJobId(jobId);
-      setManualJobId(jobId);
-      toast.success("Job created", {
-        description: `Job ID: ${jobId}`,
-      });
-    } catch (error: unknown) {
-      console.error(error);
-      toast.error("Error uploading ZIP", {
-        description:
-          error instanceof Error ? error.message : "Unexpected error",
-      });
-    }
-  });
-
-  const handleRetry = async () => {
-    if (!currentJobId) return;
-    try {
-      await retryMutation.retryOcrJob({ jobId: currentJobId });
-      toast.success("Job retried", {
-        description: "The job will resume from its last step.",
-      });
-      jobQuery.refetch();
-    } catch (error: unknown) {
-      console.error(error);
-      toast.error("Error retrying job", {
-        description:
-          error instanceof Error ? error.message : "Unexpected error",
-      });
-    }
-  };
-
-  const handleLoadJob = () => {
-    if (!manualJobId.trim()) return;
-    setCurrentJobId(manualJobId.trim());
-  };
-
-  const handleSelectJob = (jobId: string) => {
-    setCurrentJobId(jobId);
-    setManualJobId(jobId);
-  };
-
-  const handleDownloadTxt = () => {
-    const url = resultQuery.ocrResult?.txt?.url;
-    if (!url) return;
-    openSignedUrl(url);
-  };
-
-  const handleDownloadDocx = () => {
-    const url = resultQuery.ocrResult?.docx?.url;
-    if (!url) return;
-    openSignedUrl(url);
-  };
-
-  const handleDownloadRawZip = () => {
-    const url = resultQuery.ocrResult?.rawZip?.url;
-    if (!url) return;
-    openSignedUrl(url);
-  };
-
-  const progressPct = useMemo(() => {
-    if (!job?.totalImages || job.totalImages === 0) return 0;
-    return Math.round(((job.processedImages ?? 0) / job.totalImages) * 100);
-  }, [job?.processedImages, job?.totalImages]);
+  const totalStorage = metrics?.storage.totalBytes ?? 0
+  const txtStorage = metrics?.storage.breakdown.txtBytes ?? 0
+  const docxStorage = metrics?.storage.breakdown.docxBytes ?? 0
+  const zipStorage = metrics?.storage.breakdown.zipBytes ?? 0
 
   return (
-    <main className="min-h-screen bg-background">
-      <div className="container max-w-5xl py-10 space-y-8">
-        <header className="flex flex-col gap-2">
-          <h1 className="text-3xl font-semibold tracking-tight">
-            Chinese Subtitle OCR Pipeline
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Upload a ZIP with frames, let the pipeline run (preprocess, batch
-            OCR with GPT-4.1, build TXT & DOCX), and download the extracted
-            subtitles.
-          </p>
-        </header>
+    <div className="flex h-full flex-col">
+      <div className="flex h-full flex-col gap-3 overflow-auto">
+        <header className="flex flex-col gap-2 shrink-0">
+          <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
+        <p className="text-sm text-muted-foreground">
+            Overview of your OCR processing jobs, documents, and storage usage
+        </p>
+      </header>
 
-        <div className="grid gap-6 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.3fr)]">
-          {/* Upload Card */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Upload ZIP</CardTitle>
-              <CardDescription>
-                Only <span className="font-mono">.zip</span> files containing{" "}
-                <span className="font-mono">.png</span> or{" "}
-                <span className="font-mono">.jpg</span> images.
-              </CardDescription>
+        {hasError && (
+          <Card className="shrink-0">
+            <CardContent className="py-8">
+              <p className="text-sm text-destructive text-center">
+                Failed to load metrics: {metricsQuery.error?.message ?? "Unknown error"}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4 shrink-0">
+          {/* Total Jobs */}
+          <Link href="/history">
+            <Card className="cursor-pointer transition-colors hover:border-primary/50">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Total Jobs</CardTitle>
+                <Clock className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <form className="space-y-6" onSubmit={onSubmit}>
-                <div className="space-y-2">
-                  <Label htmlFor="file">ZIP file</Label>
-                  <Input
-                    id="file"
-                    type="file"
-                    accept=".zip"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        setValue("file", file, { shouldValidate: true });
-                      } else {
-                        setValue("file", undefined, {
-                          shouldValidate: true,
-                        });
-                      }
-                    }}
-                  />
-                  {selectedFile && (
+                {isLoading ? (
+                  <div className="space-y-1">
+                    <Skeleton className="h-8 w-16" />
+                    <Skeleton className="h-3 w-24" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-2xl font-bold">{totalJobs}</div>
                     <p className="text-xs text-muted-foreground">
-                      Selected:{" "}
-                      <span className="font-mono">{selectedFile.name}</span>{" "}
-                      ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+                      All OCR processing jobs
                     </p>
-                  )}
-                  {errors.file && (
-                    <p className="text-xs text-destructive">
-                      {errors.file.message as string}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </Link>
+
+          {/* Completed Jobs */}
+          <Link href="/history?status=DONE">
+            <Card className="cursor-pointer transition-colors hover:border-emerald-500/50">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Completed</CardTitle>
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <div className="space-y-1">
+                    <Skeleton className="h-8 w-16" />
+                    <Skeleton className="h-3 w-24" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-2xl font-bold text-emerald-600">
+                      {completedJobs}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Successfully finished
                     </p>
-                  )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </Link>
+
+          {/* Failed Jobs */}
+          <Link href="/history?status=ERROR">
+            <Card className="cursor-pointer transition-colors hover:border-destructive/50">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Failed</CardTitle>
+                <XCircle className="h-4 w-4 text-destructive" />
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <div className="space-y-1">
+                    <Skeleton className="h-8 w-16" />
+                    <Skeleton className="h-3 w-20" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-2xl font-bold text-destructive">
+                      {failedJobs}
+                    </div>
+                    <p className="text-xs text-muted-foreground">With errors</p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </Link>
+
+          {/* Processing Jobs */}
+          <Link href="/history?status=PROCESSING">
+            <Card className="cursor-pointer transition-colors hover:border-primary/50">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Processing</CardTitle>
+                <Clock className="h-4 w-4 text-primary" />
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <div className="space-y-1">
+                    <Skeleton className="h-8 w-16" />
+                    <Skeleton className="h-3 w-20" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-2xl font-bold text-primary">
+                      {processingJobs}
+                    </div>
+                    <p className="text-xs text-muted-foreground">In progress</p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </Link>
                 </div>
 
-                <Button
-                  type="submit"
-                  disabled={uploadMutation.isPending}
-                  className="w-full"
-                >
-                  {uploadMutation.isPending ? "Uploading..." : "Start OCR Job"}
-                </Button>
-              </form>
-            </CardContent>
-            <CardFooter className="flex flex-col items-start gap-4">
-              <Separator />
-              <div className="w-full space-y-2">
-                <Label htmlFor="jobIdInput">Load existing job</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="jobIdInput"
-                    placeholder="Paste job ID..."
-                    value={manualJobId}
-                    onChange={(e) => setManualJobId(e.target.value)}
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleLoadJob}
-                    disabled={!manualJobId.trim()}
-                  >
-                    Load
+        <div className="grid gap-3 md:grid-cols-2">
+          {/* Documents Summary */}
+          <Link href="/documents" className="flex">
+            <Card className="cursor-pointer transition-colors hover:border-primary/50 flex-1 flex flex-col">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FileText className="h-5 w-5 text-muted-foreground" />
+                    <CardTitle>Documents</CardTitle>
+                  </div>
+                  <Button variant="ghost" size="sm" asChild onClick={(e) => e.stopPropagation()}>
+                    <span>
+                      View all
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </span>
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Use this if you closed the page and want to resume monitoring
-                  an existing job.
-                </p>
-              </div>
-            </CardFooter>
-          </Card>
-
-          {/* Job Status Card */}
-          <Card className="flex flex-col">
-            <CardHeader className="flex flex-row items-start justify-between gap-2">
-              <div className="space-y-1">
-                <CardTitle>Job status</CardTitle>
-                <CardDescription className="break-all">
-                  {currentJobId ? (
-                    <>
-                      Job ID:{" "}
-                      <span className="font-mono text-xs">
-                        {currentJobId}
-                      </span>
-                    </>
-                  ) : (
-                    "Upload a ZIP to start a new job."
-                  )}
+                <CardDescription>
+                  Generated text and Word documents
                 </CardDescription>
+              </CardHeader>
+            <CardContent className="space-y-4">
+              {isLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-full" />
               </div>
-              {job?.status && (
-                <Badge variant={statusVariant[job.status]}>
-                  {statusLabel[job.status]}
-                </Badge>
-              )}
-            </CardHeader>
-
-            <CardContent className="flex-1 flex flex-col gap-4">
-              {jobQuery.isLoading && !job && currentJobId && (
-                <p className="text-sm text-muted-foreground">
-                  Loading job info...
-                </p>
-              )}
-
-              {!currentJobId && (
-                <p className="text-sm text-muted-foreground">
-                  No job selected. Upload a ZIP or load an existing Job ID.
-                </p>
-              )}
-
-              {job && (
-                <>
-                  {/* Steps timeline */}
-                  <div className="space-y-3">
-                    <p className="text-xs font-medium uppercase text-muted-foreground">
-                      Pipeline steps
-                    </p>
+              ) : (
                     <div className="space-y-2">
-                      {(
-                        [
-                          JobStep.PREPROCESSING,
-                          JobStep.BATCH_SUBMITTED,
-                          JobStep.RESULTS_SAVED,
-                          JobStep.DOCS_BUILT,
-                        ] as JobStep[]
-                      ).map((s) => {
-                        const isActive = job.step === s;
-                        const isCompleted =
-                          (job.step === JobStep.BATCH_SUBMITTED && s === JobStep.PREPROCESSING) ||
-                          (job.step === JobStep.RESULTS_SAVED &&
-                            (s === JobStep.PREPROCESSING ||
-                              s === JobStep.BATCH_SUBMITTED)) ||
-                          (job.step === JobStep.DOCS_BUILT &&
-                            (s === JobStep.PREPROCESSING ||
-                              s === JobStep.BATCH_SUBMITTED ||
-                              s === JobStep.RESULTS_SAVED)) ||
-                          job.status === JobsStatus.DONE;
-                        return (
-                          <div
-                            key={s}
-                            className="flex items-center justify-between rounded-md border px-3 py-2 text-xs"
-                          >
-                            <div className="flex items-center gap-2">
-                              <div
-                                className={`h-2 w-2 rounded-full ${
-                                  isCompleted
-                                    ? "bg-emerald-500"
-                                    : isActive
-                                    ? "bg-primary"
-                                    : "bg-muted-foreground/40"
-                                }`}
-                              />
-                              <span className="font-medium">
-                                {stepLabel[s]}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      Total Documents:
                               </span>
-                            </div>
-                            {isCompleted && (
-                              <Badge variant="outline" className="text-[10px]">
-                                done
-                              </Badge>
-                            )}
-                            {!isCompleted && isActive && (
-                              <Badge
-                                variant="outline"
-                                className="text-[10px]"
-                              >
-                                running
-                              </Badge>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <span className="text-sm font-semibold">{totalDocuments}</span>
                   </div>
-
-                  {/* Progreso imágenes */}
                   <Separator />
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-muted-foreground">
-                        Frames processed
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      TXT Files:
+                    </span>
+                  <span className="text-sm font-semibold">
+                    {txtCount}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">
+                    DOCX Files:
                       </span>
-                      <span className="font-mono text-[11px]">
-                        {job.processedImages ?? 0} /{" "}
-                        {job.totalImages ?? 0}
+                  <span className="text-sm font-semibold">
+                    {docxCount}
                       </span>
                     </div>
-                    <Progress value={progressPct} />
-                  </div>
-
-                  {/* Debug / detalles */}
-                  <Separator />
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      Details
-                    </p>
-                    <ScrollArea className="h-24 rounded-md border bg-muted/40 px-2 py-1 text-xs">
-                      <div className="space-y-1">
-                        <p>
-                          <span className="font-semibold">Status:</span>{" "}
-                          {job.status}
-                        </p>
-                        <p>
-                          <span className="font-semibold">Step:</span>{" "}
-                          {job.step}
-                        </p>
-                        <p>
-                          <span className="font-semibold">Created:</span>{" "}
-                          {job.createdAt
-                            ? new Date(job.createdAt).toLocaleString()
-                            : "-"}
-                        </p>
-                        <p>
-                          <span className="font-semibold">Updated:</span>{" "}
-                          {job.updatedAt
-                            ? new Date(job.updatedAt).toLocaleString()
-                            : "-"}
-                        </p>
-                        {job.error && (
-                          <p className="text-destructive">
-                            <span className="font-semibold">Error:</span>{" "}
-                            {job.error}
-                          </p>
-                        )}
-                      </div>
-                    </ScrollArea>
-                  </div>
-                </>
+                </div>
               )}
             </CardContent>
+            </Card>
+          </Link>
 
-            <CardFooter className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRetry}
-                  disabled={
-                    !currentJobId ||
-                    retryMutation.isLoading ||
-                    job?.status === JobsStatus.DONE ||
-                    isProcessing
-                  }
-                >
-                  {retryMutation.isLoading ? "Retrying..." : "Retry job"}
-                </Button>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleDownloadTxt}
-                  disabled={
-                    !currentJobId ||
-                    !job ||
-                    job.status !== "DONE" ||
-                    !job.hasResults ||
-                    resultQuery.isLoading ||
-                    !resultQuery.ocrResult?.txt
-                  }
-                >
-                  Download TXT
-                </Button>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleDownloadDocx}
-                  disabled={
-                    !currentJobId ||
-                    !job ||
-                    job.status !== "DONE" ||
-                    !job.hasResults ||
-                    resultQuery.isLoading ||
-                    !resultQuery.ocrResult?.docx
-                  }
-                >
-                  Download DOCX
-                </Button>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={handleDownloadRawZip}
-                  disabled={
-                    !currentJobId ||
-                    !job ||
-                    job.status !== "DONE" ||
-                    !job.hasResults ||
-                    resultQuery.isLoading ||
-                    !resultQuery.ocrResult?.rawZip
-                  }
-                >
-                  Download Filtered ZIP
-                </Button>
-              </div>
-
-              {job?.status === JobsStatus.DONE && (
-                <p className="text-xs text-muted-foreground">
-                  Job finished successfully. You can download the extracted
-                  subtitles as TXT, DOCX, or the filtered RAW ZIP.
-                </p>
+          {/* Images Summary */}
+          <Link href="/images" className="flex">
+            <Card className="cursor-pointer transition-colors hover:border-primary/50 flex-1 flex flex-col">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <ImageIcon className="h-5 w-5 text-muted-foreground" />
+                    <CardTitle>Processed Images</CardTitle>
+                  </div>
+                  <Button variant="ghost" size="sm" asChild onClick={(e) => e.stopPropagation()}>
+                    <span>
+                      View all
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </span>
+                  </Button>
+                </div>
+                <CardDescription>
+                  Processed image ZIPs with thumbnails
+                </CardDescription>
+              </CardHeader>
+            <CardContent className="space-y-4">
+              {isLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-full" />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      Total ZIPs:
+                    </span>
+                    <span className="text-sm font-semibold">{totalImages}</span>
+                  </div>
+                  <Separator />
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      With Thumbnails:
+                    </span>
+                  <span className="text-sm font-semibold">
+                    {imagesWithThumbnails}
+                  </span>
+                  </div>
+                </div>
               )}
-              {job?.status === JobsStatus.ERROR && (
-                <p className="text-xs text-destructive">
-                  Job failed. Fix the issue, then click{" "}
-                  <span className="font-semibold">Retry job</span> to resume
-                  from the last step.
-                </p>
-              )}
-            </CardFooter>
+            </CardContent>
           </Card>
+          </Link>
         </div>
 
-        <Card>
-          <CardHeader className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-            <div className="space-y-1">
-              <CardTitle>Jobs overview</CardTitle>
+        {/* Quick Actions */}
+        <Card className="shrink-0">
+          <CardHeader>
+            <CardTitle>Quick Actions</CardTitle>
               <CardDescription>
-                Select any job to inspect its progress and resume tracking.
+              Common tasks and navigation shortcuts
               </CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              {jobsQuery.isRefetching && (
-                <Badge variant="outline" className="text-[10px] uppercase">
-                  refreshing
-                </Badge>
-              )}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => jobsQuery.refetch()}
-                disabled={jobsQuery.isLoading}
-              >
-                Refresh
-              </Button>
-            </div>
           </CardHeader>
           <CardContent>
-            {jobsQuery.isLoading && (
-              <p className="text-sm text-muted-foreground">Loading recent jobs...</p>
-            )}
-            {jobsQuery.isError && (
-              <p className="text-sm text-destructive">
-                Failed to load jobs: {jobsQuery.error?.message ?? "Unknown error"}
-              </p>
-            )}
-            {!jobsQuery.isLoading && !jobsQuery.isError && jobs.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                No jobs yet. Upload a ZIP to start processing.
-              </p>
-            )}
-            {!jobsQuery.isLoading && !jobsQuery.isError && jobs.length > 0 && (
-              <ScrollArea className="max-h-[420px] pr-4">
-                <div className="space-y-3 py-1">
-                  {jobs.map((jobItem) => {
-                    const isSelected = currentJobId === jobItem.jobId;
-                    const jobProgress =
-                      jobItem.totalImages && jobItem.totalImages > 0
-                        ? Math.round(((jobItem.processedImages ?? 0) / jobItem.totalImages) * 100)
-                        : 0;
-                    return (
-                      <button
-                        key={jobItem.jobId}
-                        type="button"
-                        onClick={() => handleSelectJob(jobItem.jobId)}
-                        className={cn(
-                          "w-full rounded-lg border px-4 py-3 text-left transition hover:border-primary",
-                          isSelected ? "border-primary/80 bg-primary/5" : "border-border bg-background"
-                        )}
-                      >
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <p className="font-mono text-xs">{jobItem.jobId}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {stepLabel[jobItem.step]} ·{" "}
-                              {jobItem.updatedAt
-                                ? new Date(jobItem.updatedAt).toLocaleString()
-                                : "Never updated"}
-                            </p>
+            <div className="flex flex-wrap gap-3">
+              <Button asChild>
+                <Link href="/new-job">Create New Job</Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href="/history">View Job History</Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href="/documents">Browse Documents</Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href="/images">View Images</Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Storage Summary */}
+        <Card className="flex-1 flex flex-col min-h-0">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+                <HardDrive className="h-5 w-5 text-muted-foreground" />
+                <CardTitle>Storage Usage</CardTitle>
+              </div>
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/settings/storage">
+                  Manage
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+            </div>
+            <CardDescription>
+              Total storage used across all files
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {isLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-full" />
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Total Storage:</span>
+                    <span className="text-sm font-semibold">
+                      {formatBytes(totalStorage)}
+                    </span>
+                  </div>
+                  <Separator />
+                  <div className="space-y-2 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        Text Files (TXT):
+                      </span>
+                      <span className="font-medium">
+                        {formatBytes(txtStorage)}
+                      </span>
                           </div>
-                          <Badge variant={statusVariant[jobItem.status]}>
-                            {statusLabel[jobItem.status]}
-                          </Badge>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        Documents (DOCX):
+                      </span>
+                      <span className="font-medium">
+                        {formatBytes(docxStorage)}
+                      </span>
                         </div>
-                        <div className="mt-3 space-y-1">
-                          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                            <span>Progress</span>
-                            <span className="font-mono">
-                              {jobItem.processedImages ?? 0} / {jobItem.totalImages ?? 0}
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        Image ZIPs:
+                      </span>
+                      <span className="font-medium">
+                        {formatBytes(zipStorage)}
                             </span>
                           </div>
-                          <Progress value={jobProgress} />
                         </div>
-                        {jobItem.error && (
-                          <p className="mt-2 text-xs text-destructive">
-                            Error: {jobItem.error}
-                          </p>
-                        )}
-                      </button>
-                    );
-                  })}
                 </div>
-              </ScrollArea>
+              </div>
             )}
           </CardContent>
-          <CardFooter>
-            <p className="text-xs text-muted-foreground">
-              The list refreshes automatically every few seconds. Click any entry to load it above.
-            </p>
-          </CardFooter>
         </Card>
       </div>
-    </main>
-  );
-};
+    </div>
+  )
+}
 
-export default HomePage;
+export default HomeView

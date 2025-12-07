@@ -1,0 +1,185 @@
+"use client"
+
+import * as React from "react"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Image as ImageIcon } from "lucide-react"
+import { cn, formatBytes } from "@/lib/utils"
+import { useAllImages } from "@/hooks/http"
+
+const openSignedUrl = (url: string) => {
+  const newWindow = window.open(url, "_blank", "noopener,noreferrer")
+  if (!newWindow) {
+    window.location.href = url
+  }
+}
+
+interface ImagesViewProps {}
+
+export const ImagesView = ({}: ImagesViewProps) => {
+  const imagesQuery = useAllImages()
+
+  const images = imagesQuery.data ?? []
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-semibold tracking-tight">
+          Processed Images
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          All processed image ZIPs from your OCR jobs
+        </p>
+      </div>
+
+      {imagesQuery.isLoading && (
+        <Card>
+          <CardContent className="py-8">
+            <p className="text-sm text-muted-foreground text-center">
+              Loading images...
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {imagesQuery.isError && (
+        <Card>
+          <CardContent className="py-8">
+            <p className="text-sm text-destructive text-center">
+              Failed to load images:{" "}
+              {imagesQuery.error?.message ?? "Unknown error"}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!imagesQuery.isLoading &&
+        !imagesQuery.isError &&
+        images.length === 0 && (
+          <Card>
+            <CardContent className="py-8">
+              <p className="text-sm text-muted-foreground text-center">
+                No processed images found. Complete an OCR job to generate image
+                ZIPs.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+      {!imagesQuery.isLoading &&
+        !imagesQuery.isError &&
+        images.length > 0 && (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {images.map((image) => (
+              <ImageCard key={image.jobId} image={image} />
+            ))}
+          </div>
+        )}
+    </div>
+  )
+}
+
+interface ImageCardProps {
+  image: {
+    jobId: string
+    thumbnailUrl: { url: string; expiresAt: string; key: string } | null
+    thumbnailKey: string | null
+    zipUrl: { url: string; expiresAt: string; key: string } | null
+    sizeBytes: number | null
+    filesExist: {
+      thumbnail: boolean
+      zip: boolean
+    }
+    createdAt: Date | null
+    updatedAt: Date | null
+  }
+}
+
+const ImageCard = ({ image }: ImageCardProps) => {
+  const [imageError, setImageError] = React.useState(false)
+
+  const handleDownload = () => {
+    if (!image.zipUrl) return
+    openSignedUrl(image.zipUrl.url)
+  }
+
+  return (
+    <Card className="flex flex-col">
+      <CardHeader>
+        <div className="space-y-1">
+          <CardTitle className="text-sm font-mono break-all">
+            {image.jobId}
+          </CardTitle>
+          <CardDescription className="text-xs">
+            {image.createdAt
+              ? new Date(image.createdAt).toLocaleString()
+              : "Unknown date"}
+          </CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent className="flex-1">
+        <div className="aspect-video rounded-lg border bg-muted/50 flex items-center justify-center overflow-hidden mb-4">
+          {image.filesExist.thumbnail &&
+          image.thumbnailUrl &&
+          !imageError ? (
+            <img
+              src={image.thumbnailUrl.url}
+              alt={`Thumbnail for job ${image.jobId}`}
+              className="w-full h-full object-cover"
+              onError={() => setImageError(true)}
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center w-full h-full text-muted-foreground">
+              <ImageIcon className="h-12 w-12 mb-2" />
+              <span className="text-xs">No thumbnail</span>
+            </div>
+          )}
+        </div>
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Size:</span>
+            <span className="font-medium">
+              {formatBytes(image.sizeBytes)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge
+              variant={image.filesExist.thumbnail ? "default" : "secondary"}
+              className="text-xs"
+            >
+              Thumbnail: {image.filesExist.thumbnail ? "Yes" : "No"}
+            </Badge>
+            <Badge
+              variant={image.filesExist.zip ? "default" : "secondary"}
+              className="text-xs"
+            >
+              ZIP: {image.filesExist.zip ? "Available" : "Missing"}
+            </Badge>
+          </div>
+        </div>
+      </CardContent>
+      {image.filesExist.zip && (
+        <CardFooter>
+          <Button
+            type="button"
+            size="sm"
+            onClick={handleDownload}
+            disabled={!image.zipUrl}
+            className="w-full"
+          >
+            Download ZIP
+          </Button>
+        </CardFooter>
+      )}
+    </Card>
+  )
+}
+

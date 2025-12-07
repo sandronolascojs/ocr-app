@@ -15,6 +15,7 @@ export const useUploadOcrZip = () => {
   const utils = trpc.useUtils();
   const prepareUpload = trpc.ocr.uploadZip.useMutation();
   const confirmUpload = trpc.ocr.confirmUpload.useMutation();
+  const abortUpload = trpc.ocr.abortUpload.useMutation();
 
   return useMutation({
     mutationFn: async ({ file }: UploadArgs) => {
@@ -24,11 +25,39 @@ export const useUploadOcrZip = () => {
         fileSize: file.size,
       });
 
-      await uploadViaSignedUrl(file, prepareResponse.upload);
+      let uploadSucceeded = false;
 
-      await confirmUpload.mutateAsync({ jobId: prepareResponse.jobId });
+      try {
+        await uploadViaSignedUrl(file, prepareResponse.upload);
+        uploadSucceeded = true;
 
-      return { jobId: prepareResponse.jobId };
+        await confirmUpload.mutateAsync({ jobId: prepareResponse.jobId });
+
+        return { jobId: prepareResponse.jobId };
+      } catch (error) {
+        // If upload succeeded but confirmUpload fails, attempt cleanup to remove orphaned file
+        if (uploadSucceeded) {
+          console.warn(
+            `Upload confirmation failed for job ${prepareResponse.jobId}, attempting cleanup...`
+          );
+
+          try {
+            await abortUpload.mutateAsync({ jobId: prepareResponse.jobId });
+            console.info(
+              `Successfully cleaned up orphaned file for job ${prepareResponse.jobId}`
+            );
+          } catch (cleanupError) {
+            console.error(
+              `Failed to cleanup orphaned file for job ${prepareResponse.jobId}:`,
+              cleanupError instanceof Error ? cleanupError.message : cleanupError
+            );
+            // Don't suppress the original error - log cleanup failure but rethrow original
+          }
+        }
+
+        // Rethrow the original error
+        throw error;
+      }
     },
     onSuccess: () => {
       utils.ocr.listJobs.invalidate();

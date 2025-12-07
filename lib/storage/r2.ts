@@ -10,6 +10,8 @@ import {
   HeadObjectCommand,
   PutObjectCommand,
   DeleteObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
   type GetObjectCommandInput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -48,6 +50,25 @@ export type SignedDownloadUrl = SignedUrlBase & {
 const createExpiryIso = (ttlSeconds: number): string =>
   new Date(Date.now() + ttlSeconds * 1000).toISOString();
 
+/**
+ * Sanitizes a filename for use in Content-Disposition header.
+ * Removes CR/LF characters and escapes quotes and backslashes.
+ */
+const sanitizeFilename = (filename: string): string => {
+  return filename
+    .replace(/[\r\n]/g, " ") // Replace CR/LF with spaces
+    .replace(/\\/g, "\\\\") // Escape backslashes
+    .replace(/"/g, '\\"'); // Escape quotes
+};
+
+/**
+ * Encodes a filename according to RFC5987 for use in Content-Disposition header.
+ * Returns the encoded value for the filename* parameter.
+ */
+const encodeFilenameRfc5987 = (filename: string): string => {
+  return encodeURIComponent(filename);
+};
+
 export const createSignedUploadUrl = async (params: {
   key: string;
   contentType: string;
@@ -78,11 +99,15 @@ export const createSignedDownloadUrl = async (params: {
   downloadFilename: string;
 }): Promise<SignedDownloadUrl> => {
   const ttl = env.R2_SIGNED_DOWNLOAD_TTL_SECONDS;
+  const sanitizedFilename = sanitizeFilename(params.downloadFilename);
+  const encodedFilename = encodeFilenameRfc5987(params.downloadFilename);
+  const contentDisposition = `attachment; filename="${sanitizedFilename}"; filename*=UTF-8''${encodedFilename}`;
+
   const command = new GetObjectCommand({
     Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
     Key: params.key,
     ResponseContentType: params.responseContentType,
-    ResponseContentDisposition: `attachment; filename="${params.downloadFilename}"`,
+    ResponseContentDisposition: contentDisposition,
   } satisfies GetObjectCommandInput);
 
   const url = await getSignedUrl(r2Client, command, { expiresIn: ttl });
@@ -175,5 +200,115 @@ export const deleteObjectIfExists = async (key: string): Promise<void> => {
       Key: key,
     })
   );
+};
+
+export const listObjectsByPrefix = async (
+  prefix: string
+): Promise<Array<{ key: string; size: number }>> => {
+  const objects: Array<{ key: string; size: number }> = [];
+  let continuationToken: string | undefined;
+
+  do {
+    const command = new ListObjectsV2Command({
+      Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    });
+
+    const response = await r2Client.send(command);
+
+    if (response.Contents) {
+      for (const object of response.Contents) {
+        if (object.Key && object.Size !== undefined) {
+          objects.push({
+            key: object.Key,
+            size: object.Size,
+          });
+        }
+      }
+    }
+
+    continuationToken = response.NextContinuationToken;
+  } while (continuationToken);
+
+  return objects;
+};
+
+export const getObjectSize = async (key: string): Promise<number | null> => {
+  try {
+    const response = await r2Client.send(
+      new HeadObjectCommand({
+        Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+        Key: key,
+      })
+    );
+
+    return response.ContentLength ?? null;
+  } catch (error) {
+    const isNotFoundName =
+      typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      (error as { name?: string }).name === "NotFound";
+    const isNotFoundCode =
+      typeof error === "object" &&
+      error !== null &&
+      "Code" in error &&
+      (error as { Code?: string }).Code === "NoSuchKey";
+    const isNotFoundStatus =
+      typeof error === "object" &&
+      error !== null &&
+      "$metadata" in error &&
+      Boolean(
+        (error as { $metadata?: { httpStatusCode?: number } }).$metadata
+          ?.httpStatusCode === 404
+      );
+
+    if (isNotFoundName || isNotFoundCode || isNotFoundStatus) {
+      return null;
+    }
+    throw error;
+  }
+};
+
+export const deleteObjectsByPrefix = async (
+  prefix: string
+): Promise<number> => {
+  const objects = await listObjectsByPrefix(prefix);
+  let deletedCount = 0;
+
+  // Delete in batches of 1000 (S3 limit)
+  const batchSize = 1000;
+  for (let i = 0; i < objects.length; i += batchSize) {
+    const batch = objects.slice(i, i + batchSize);
+
+    await r2Client.send(
+      new DeleteObjectsCommand({
+        Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+        Delete: {
+          Objects: batch.map((obj) => ({ Key: obj.key })),
+        },
+      })
+    );
+
+    deletedCount += batch.length;
+  }
+
+  return deletedCount;
+};
+
+export const createSignedThumbnailUrl = async (
+  key: string
+): Promise<SignedDownloadUrl | null> => {
+  const exists = await ensureObjectExists(key);
+  if (!exists) {
+    return null;
+  }
+
+  return createSignedDownloadUrl({
+    key,
+    responseContentType: "image/jpeg",
+    downloadFilename: "thumbnail.jpg",
+  });
 };
 

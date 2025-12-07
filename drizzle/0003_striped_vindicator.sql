@@ -1,1 +1,0 @@
-ALTER TABLE "ocr_jobs" ADD COLUMN "raw_zip_path" text;

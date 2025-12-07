@@ -23,3 +23,6 @@ export const getJobDocxKey = (jobId: string) =>
 export const getJobBatchJsonlKey = (jobId: string) =>
   `${STORAGE_PREFIXES.tmpBase}/${jobId}-ocr-batch.jsonl`;
 
+export const getJobThumbnailKey = (jobId: string) =>
+  `${getJobRootKey(jobId)}/thumbnail.jpg`;
+

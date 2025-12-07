@@ -8,6 +8,8 @@ export const ocrJobs = pgTable("ocr_jobs", {
 
   jobId: text("job_id").notNull().unique(),
 
+  userId: text("user_id").notNull(),
+
   status: jobStatusEnum("status").notNull().default(JobsStatus.PENDING),
 
   step: jobStepEnum("step").notNull().default(JobStep.PREPROCESSING),
@@ -27,6 +29,12 @@ export const ocrJobs = pgTable("ocr_jobs", {
 
   totalImages: integer("total_images").notNull().default(0),
   processedImages: integer("processed_images").notNull().default(0),
+
+  // Storage tracking
+  txtSizeBytes: integer("txt_size_bytes"),
+  docxSizeBytes: integer("docx_size_bytes"),
+  rawZipSizeBytes: integer("raw_zip_size_bytes"),
+  thumbnailKey: text("thumbnail_key"),
 
   createdAt,
   updatedAt,
