@@ -1,6 +1,7 @@
 CREATE TYPE "public"."api_key_provider" AS ENUM('openai');--> statement-breakpoint
 CREATE TYPE "public"."job_status" AS ENUM('PENDING', 'PROCESSING', 'DONE', 'ERROR');--> statement-breakpoint
 CREATE TYPE "public"."ocr_job_step" AS ENUM('PREPROCESSING', 'BATCH_SUBMITTED', 'RESULTS_SAVED', 'DOCS_BUILT');--> statement-breakpoint
+CREATE TYPE "public"."team_role" AS ENUM('owner', 'admin', 'member');--> statement-breakpoint
 CREATE TABLE "ocr_job_frames" (
 	"ocr_job_frame_id" text PRIMARY KEY NOT NULL,
 	"job_id" text NOT NULL,
@@ -29,9 +30,9 @@ CREATE TABLE "ocr_jobs" (
 	"batch_output_file_id" text,
 	"total_images" integer DEFAULT 0 NOT NULL,
 	"processed_images" integer DEFAULT 0 NOT NULL,
-	"txt_size_bytes" integer,
-	"docx_size_bytes" integer,
-	"raw_zip_size_bytes" integer,
+	"txt_size_bytes" bigint,
+	"docx_size_bytes" bigint,
+	"raw_zip_size_bytes" bigint,
 	"thumbnail_key" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -53,7 +54,8 @@ CREATE TABLE "accounts" (
 	"password" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "accounts_id_unique" UNIQUE("id")
+	CONSTRAINT "accounts_id_unique" UNIQUE("id"),
+	CONSTRAINT "user_accounts_account_provider_unique" UNIQUE("account_id","provider_id")
 );
 --> statement-breakpoint
 CREATE TABLE "api_keys" (
@@ -86,10 +88,11 @@ CREATE TABLE "team_members" (
 	"id" text PRIMARY KEY NOT NULL,
 	"team_id" text NOT NULL,
 	"user_id" text NOT NULL,
-	"role" text DEFAULT 'member' NOT NULL,
+	"role" "team_role" DEFAULT 'member' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "team_members_id_unique" UNIQUE("id")
+	CONSTRAINT "team_members_id_unique" UNIQUE("id"),
+	CONSTRAINT "team_members_unique_team_user" UNIQUE("team_id","user_id")
 );
 --> statement-breakpoint
 CREATE TABLE "teams" (
@@ -98,7 +101,8 @@ CREATE TABLE "teams" (
 	"owner_id" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "teams_id_unique" UNIQUE("id")
+	CONSTRAINT "teams_id_unique" UNIQUE("id"),
+	CONSTRAINT "teams_owner_id_unique" UNIQUE("owner_id")
 );
 --> statement-breakpoint
 CREATE TABLE "users" (
@@ -130,4 +134,7 @@ ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_user_id_users_id_fk" FOREIGN KEY
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_members" ADD CONSTRAINT "team_members_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "team_members" ADD CONSTRAINT "team_members_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "teams" ADD CONSTRAINT "teams_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "teams" ADD CONSTRAINT "teams_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "api_keys_user_provider_active_unique" ON "api_keys" USING btree ("user_id","provider");--> statement-breakpoint
+CREATE INDEX "verifications_identifier_idx" ON "verifications" USING btree ("identifier");--> statement-breakpoint
+CREATE INDEX "verifications_expires_at_idx" ON "verifications" USING btree ("expires_at");

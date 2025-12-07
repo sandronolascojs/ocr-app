@@ -1,5 +1,5 @@
 {
-  "id": "acdafd61-cba7-4407-81cc-6839666d4bff",
+  "id": "b992115f-5cce-4885-b6ad-1365fb2d45c4",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -191,19 +191,19 @@
         },
         "txt_size_bytes": {
           "name": "txt_size_bytes",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         },
         "docx_size_bytes": {
           "name": "docx_size_bytes",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         },
         "raw_zip_size_bytes": {
           "name": "raw_zip_size_bytes",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         },
@@ -360,6 +360,14 @@
           "columns": [
             "id"
           ]
+        },
+        "user_accounts_account_provider_unique": {
+          "name": "user_accounts_account_provider_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "account_id",
+            "provider_id"
+          ]
         }
       },
       "policies": {},
@@ -429,7 +437,29 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "api_keys_user_provider_active_unique": {
+          "name": "api_keys_user_provider_active_unique",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "api_keys_user_id_users_id_fk": {
           "name": "api_keys_user_id_users_id_fk",
@@ -575,7 +605,8 @@
         },
         "role": {
           "name": "role",
-          "type": "text",
+          "type": "team_role",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
           "default": "'member'"
@@ -631,6 +662,14 @@
           "nullsNotDistinct": false,
           "columns": [
             "id"
+          ]
+        },
+        "team_members_unique_team_user": {
+          "name": "team_members_unique_team_user",
+          "nullsNotDistinct": false,
+          "columns": [
+            "team_id",
+            "user_id"
           ]
         }
       },
@@ -698,6 +737,13 @@
           "nullsNotDistinct": false,
           "columns": [
             "id"
+          ]
+        },
+        "teams_owner_id_unique": {
+          "name": "teams_owner_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "owner_id"
           ]
         }
       },
@@ -826,7 +872,38 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "verifications_identifier_idx": {
+          "name": "verifications_identifier_idx",
+          "columns": [
+            {
+              "expression": "identifier",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "verifications_expires_at_idx": {
+          "name": "verifications_expires_at_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
@@ -869,6 +946,15 @@
         "BATCH_SUBMITTED",
         "RESULTS_SAVED",
         "DOCS_BUILT"
+      ]
+    },
+    "public.team_role": {
+      "name": "team_role",
+      "schema": "public",
+      "values": [
+        "owner",
+        "admin",
+        "member"
       ]
     }
   },
