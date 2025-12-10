@@ -682,7 +682,12 @@ const ensureWorkspaceLayout = async (paths: WorkspacePaths) => {
 };
 
 export const processOcrJob = inngest.createFunction(
-  { id: InngestFunctions.PROCESS_OCR_JOB },
+  {
+    id: InngestFunctions.PROCESS_OCR_JOB,
+    timeouts: {
+      finish: "2h", // Maximum allowed timeout for processing large batches of images
+    },
+  },
   { event: InngestEvents.ZIP_UPLOADED },
   async ({ event, step }): Promise<{
     jobId: string;
