@@ -65,6 +65,23 @@ type CropMeta = {
   cropSignedUrl: string;
 };
 
+type ImageEntry = {
+  entryName: string;
+  buffer: Buffer;
+  processable: {
+    baseName: string;
+    originalName: string;
+    shouldIncludeInZip: boolean;
+  };
+};
+
+type ProcessBatchResult = {
+  cropsMeta: CropMeta[];
+  processedCount: number;
+  thumbnailKey: string | null;
+  normalizedImageKeys: Array<{ name: string; key: string }>;
+};
+
 type WorkspacePaths = {
   jobRootDir: string;
   rawDir: string;
@@ -141,6 +158,7 @@ const extractTextFromCompletion = (
 };
 
 const CROP_SIGNED_URL_TTL_SECONDS = 60 * 60 * 24; // 24 hours
+const IMAGES_PER_BATCH = 50; // Process 50 images per step to avoid timeout
 
 const normalizeBufferTo1280x720 = async (input: Buffer): Promise<Buffer> => {
   const image = sharp(input);
@@ -200,37 +218,27 @@ const createThumbnailFromBuffer = async (buffer: Buffer): Promise<Buffer> => {
     .toBuffer();
 };
 
-const streamAndProcessZip = async ({
-  jobId,
-  zipKey,
-  storageKeys,
-}: {
-  jobId: string;
-  zipKey: string;
-  storageKeys: StorageKeys;
-}): Promise<StreamingArtifacts> => {
+const extractImageEntryNames = async (zipKey: string): Promise<
+  Array<{
+    entryName: string;
+    processable: {
+      baseName: string;
+      originalName: string;
+      shouldIncludeInZip: boolean;
+    };
+  }>
+> => {
   const zipReadable = await downloadObjectStream(zipKey);
   const unzipStream = zipReadable.pipe(unzipper.Parse({ forceStream: true }));
 
-  const archive = archiver("zip", { zlib: { level: 9 } });
-  let filteredZipSizeBytes = 0;
-  const sizeCounter = new Transform({
-    transform(chunk, _encoding, callback) {
-      filteredZipSizeBytes += chunk.length;
-      callback(null, chunk);
-    },
-  });
-
-  const archiveOutput = archive.pipe(sizeCounter);
-  const filteredZipUploadPromise = uploadStreamToObject({
-    key: storageKeys.rawZipKey,
-    stream: archiveOutput,
-    contentType: "application/zip",
-  });
-
-  const cropsMeta: CropMeta[] = [];
-  let processedImages = 0;
-  let thumbnailKey: string | null = null;
+  const entries: Array<{
+    entryName: string;
+    processable: {
+      baseName: string;
+      originalName: string;
+      shouldIncludeInZip: boolean;
+    };
+  }> = [];
 
   for await (const entry of unzipStream) {
     if (entry.type === "Directory") {
@@ -245,20 +253,84 @@ const streamAndProcessZip = async ({
       continue;
     }
 
+    entries.push({
+      entryName,
+      processable,
+    });
+    entry.autodrain(); // Drain to avoid memory issues
+  }
+
+  return entries;
+};
+
+const processImageBatchFromZip = async ({
+  jobId,
+  zipKey,
+  batchEntryNames,
+  batchIndex,
+  storageKeys,
+}: {
+  jobId: string;
+  zipKey: string;
+  batchEntryNames: Array<{
+    entryName: string;
+    processable: {
+      baseName: string;
+      originalName: string;
+      shouldIncludeInZip: boolean;
+    };
+  }>;
+  batchIndex: number;
+  storageKeys: StorageKeys;
+}): Promise<ProcessBatchResult> => {
+  // Re-download and extract only the needed entries
+  const zipReadable = await downloadObjectStream(zipKey);
+  const unzipStream = zipReadable.pipe(unzipper.Parse({ forceStream: true }));
+
+  const entryNameSet = new Set(batchEntryNames.map((e) => e.entryName));
+  const cropsMeta: CropMeta[] = [];
+  const normalizedImageKeys: Array<{ name: string; key: string }> = [];
+  let thumbnailKey: string | null = null;
+
+  for await (const entry of unzipStream) {
+    if (entry.type === "Directory") {
+      entry.autodrain();
+      continue;
+    }
+
+    if (!entryNameSet.has(entry.path)) {
+      entry.autodrain();
+      continue;
+    }
+
+    const entryInfo = batchEntryNames.find((e) => e.entryName === entry.path);
+    if (!entryInfo) {
+      entry.autodrain();
+      continue;
+    }
+
     const fileBuffer = await entry.buffer();
     const normalizedBuffer = await normalizeBufferTo1280x720(fileBuffer);
     const cropBuffer = await cropSubtitleFromBuffer(normalizedBuffer);
 
     // Only include base images (1, 2, 3, etc.) in the final ZIP
-    // Skip decimal variants (1.1, 1.2, etc.) from the ZIP
-    if (processable.shouldIncludeInZip) {
-      const zipFilename = `${processable.baseName}.png`;
-      archive.append(normalizedBuffer, { name: zipFilename });
+    // Upload normalized image to temporary storage for ZIP creation later
+    if (entryInfo.processable.shouldIncludeInZip) {
+      const zipFilename = `${entryInfo.processable.baseName}.png`;
+      const normalizedKey = `${storageKeys.rawZipKey}-temp-${zipFilename}`;
+      await uploadBufferToObject({
+        key: normalizedKey,
+        body: normalizedBuffer,
+        contentType: "image/png",
+      });
+      normalizedImageKeys.push({
+        name: zipFilename,
+        key: normalizedKey,
+      });
     }
 
     // Create crop for ALL images (including 1.1, 1.2, etc.) for OCR processing
-    // Use original filename to preserve the relationship
-    const cropFilename = processable.originalName.replace(
+    const cropFilename = entryInfo.processable.originalName.replace(
       /\.(png|jpe?g)$/i,
       ".png"
     );
@@ -282,7 +354,8 @@ const streamAndProcessZip = async ({
       cropSignedUrl: signedCropUrl.url,
     });
 
-    if (!thumbnailKey) {
+    // Only create thumbnail from first batch, first image
+    if (!thumbnailKey && batchIndex === 0 && cropsMeta.length === 1) {
       const thumbnailBuffer = await createThumbnailFromBuffer(normalizedBuffer);
       const thumbKey = getJobThumbnailKey(jobId);
       await uploadBufferToObject({
@@ -293,35 +366,65 @@ const streamAndProcessZip = async ({
       });
       thumbnailKey = thumbKey;
     }
+  }
 
-    processedImages += 1;
-    await db
-      .update(ocrJobs)
-      .set({
-        processedImages,
-        totalImages: processedImages,
-        status: JobsStatus.PROCESSING,
-      })
-      .where(eq(ocrJobs.jobId, jobId));
+  return {
+    cropsMeta,
+    processedCount: batchEntryNames.length,
+    thumbnailKey,
+    normalizedImageKeys,
+  };
+};
+
+
+const createFinalZip = async ({
+  normalizedImageKeys,
+  storageKeys,
+}: {
+  normalizedImageKeys: Array<{ name: string; key: string }>;
+  storageKeys: StorageKeys;
+}): Promise<{ rawZipKey: string | null; rawZipSizeBytes: number | null }> => {
+  if (!normalizedImageKeys.length) {
+    return { rawZipKey: null, rawZipSizeBytes: null };
+  }
+
+  const archive = archiver("zip", { zlib: { level: 9 } });
+  let filteredZipSizeBytes = 0;
+  const sizeCounter = new Transform({
+    transform(chunk, _encoding, callback) {
+      filteredZipSizeBytes += chunk.length;
+      callback(null, chunk);
+    },
+  });
+
+  const archiveOutput = archive.pipe(sizeCounter);
+  const filteredZipUploadPromise = uploadStreamToObject({
+    key: storageKeys.rawZipKey,
+    stream: archiveOutput,
+    contentType: "application/zip",
+  });
+
+  // Sort zip entries by filename to ensure consistent ordering
+  const sortedImageKeys = [...normalizedImageKeys].sort((a, b) => {
+    const comparison = compareImageFilenames(a.name, b.name);
+    if (comparison !== 0) {
+      return comparison;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  // Download each normalized image and add to ZIP
+  for (const imageKey of sortedImageKeys) {
+    const imageStream = await downloadObjectStream(imageKey.key);
+    archive.append(imageStream, { name: imageKey.name });
   }
 
   await archive.finalize();
   await filteredZipUploadPromise;
 
-  const sortedCrops = [...cropsMeta].sort((a, b) => {
-    const comparison = compareImageFilenames(a.filename, b.filename);
-    if (comparison !== 0) {
-      return comparison;
-    }
-    return a.filename.localeCompare(b.filename);
-  });
-
   return {
-    cropsMeta: sortedCrops,
-    totalImages: processedImages,
-    rawZipKey: processedImages > 0 ? storageKeys.rawZipKey : null,
-    rawZipSizeBytes: processedImages > 0 ? filteredZipSizeBytes : null,
-    thumbnailKey,
+    rawZipKey: storageKeys.rawZipKey,
+    rawZipSizeBytes: filteredZipSizeBytes,
   };
 };
 
@@ -684,9 +787,6 @@ const ensureWorkspaceLayout = async (paths: WorkspacePaths) => {
 export const processOcrJob = inngest.createFunction(
   {
     id: InngestFunctions.PROCESS_OCR_JOB,
-    timeouts: {
-      finish: "2h", // Maximum allowed timeout for processing large batches of images
-    },
   },
   { event: InngestEvents.ZIP_UPLOADED },
   async ({ event, step }): Promise<{
@@ -756,25 +856,96 @@ export const processOcrJob = inngest.createFunction(
 
       await ensureWorkspaceLayout(workspacePaths);
 
-      const streamingResult = await step.run(
-        OcrStepId.PreprocessImagesAndCrops,
+      // Step 1: Extract all image entry names (quick operation, no buffers)
+      const imageEntryNames = await step.run(
+        `${OcrStepId.PreprocessImagesAndCrops}-extract`,
+        () => extractImageEntryNames(storageZipKey)
+      );
+
+      if (!imageEntryNames.length) {
+        throw new Error("No valid images found in the ZIP file.");
+      }
+
+      // Step 2: Process images in batches to avoid timeout
+      const allCropsMeta: CropMeta[] = [];
+      const allNormalizedImageKeys: Array<{ name: string; key: string }> = [];
+      let thumbnailKey: string | null = null;
+
+      type EntryNameType = {
+        entryName: string;
+        processable: {
+          baseName: string;
+          originalName: string;
+          shouldIncludeInZip: boolean;
+        };
+      };
+
+      const batches: EntryNameType[][] = [];
+      for (let i = 0; i < imageEntryNames.length; i += IMAGES_PER_BATCH) {
+        batches.push(imageEntryNames.slice(i, i + IMAGES_PER_BATCH));
+      }
+
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch: EntryNameType[] = batches[batchIndex];
+        const batchResult = await step.run(
+          `${OcrStepId.ProcessImageBatch}-${batchIndex}`,
+          () =>
+            processImageBatchFromZip({
+              jobId,
+              zipKey: storageZipKey,
+              batchEntryNames: batch,
+              batchIndex,
+              storageKeys,
+            })
+        );
+
+        allCropsMeta.push(...batchResult.cropsMeta);
+        allNormalizedImageKeys.push(...batchResult.normalizedImageKeys);
+
+        if (batchResult.thumbnailKey && !thumbnailKey) {
+          thumbnailKey = batchResult.thumbnailKey;
+        }
+
+        // Update progress in database
+        const currentProcessed = allCropsMeta.length;
+        await db
+          .update(ocrJobs)
+          .set({
+            processedImages: currentProcessed,
+            totalImages: imageEntryNames.length,
+            status: JobsStatus.PROCESSING,
+          })
+          .where(eq(ocrJobs.jobId, jobId));
+      }
+
+      // Step 3: Create final ZIP from all processed images
+      const zipResult = await step.run(
+        `${OcrStepId.PreprocessImagesAndCrops}-create-zip`,
         () =>
-          streamAndProcessZip({
-            jobId,
-            zipKey: storageZipKey,
+          createFinalZip({
+            normalizedImageKeys: allNormalizedImageKeys,
             storageKeys,
           })
       );
 
-      totalImages = streamingResult.totalImages;
-      rawZipKeyForJob = streamingResult.rawZipKey;
+      // Sort cropsMeta by filename
+      const sortedCrops = [...allCropsMeta].sort((a, b) => {
+        const comparison = compareImageFilenames(a.filename, b.filename);
+        if (comparison !== 0) {
+          return comparison;
+        }
+        return a.filename.localeCompare(b.filename);
+      });
+
+      totalImages = allCropsMeta.length;
+      rawZipKeyForJob = zipResult.rawZipKey;
 
       await db
         .update(ocrJobs)
         .set({
-          rawZipPath: streamingResult.rawZipKey,
-          rawZipSizeBytes: streamingResult.rawZipSizeBytes,
-          thumbnailKey: streamingResult.thumbnailKey,
+          rawZipPath: zipResult.rawZipKey,
+          rawZipSizeBytes: zipResult.rawZipSizeBytes,
+          thumbnailKey,
           step: JobStep.BATCH_SUBMITTED,
           totalImages,
           processedImages: totalImages,
@@ -782,7 +953,7 @@ export const processOcrJob = inngest.createFunction(
         })
         .where(eq(ocrJobs.jobId, jobId));
 
-      const cropsMeta: CropMeta[] = streamingResult.cropsMeta;
+      const cropsMeta: CropMeta[] = sortedCrops;
       if (!cropsMeta.length) {
         throw new Error("No crops were generated from the provided ZIP file.");
       }
