@@ -12,6 +12,36 @@ describe("buildParagraphsFromFrames", () => {
     expect(paragraphs).toEqual(["Hello world", "Next"]);
   });
 
+  it("preserves order within grouped paragraphs (1, 1.1, 1.2 as single paragraph)", () => {
+    const paragraphs = buildParagraphsFromFrames([
+      { filename: "1.png", baseKey: "1", index: 0, text: "First" },
+      { filename: "1.1.png", baseKey: "1", index: 1, text: "second" },
+      { filename: "1.2.png", baseKey: "1", index: 2, text: "third" },
+      { filename: "2.png", baseKey: "2", index: 3, text: "Second" },
+      { filename: "3.png", baseKey: "3", index: 4, text: "Third" },
+    ]);
+
+    expect(paragraphs).toEqual([
+      "First second third",
+      "Second",
+      "Third",
+    ]);
+  });
+
+  it("preserves order even when frames are not in sequential index order", () => {
+    const paragraphs = buildParagraphsFromFrames([
+      { filename: "1.2.png", baseKey: "1", index: 2, text: "third" },
+      { filename: "1.png", baseKey: "1", index: 0, text: "First" },
+      { filename: "1.1.png", baseKey: "1", index: 1, text: "second" },
+      { filename: "2.png", baseKey: "2", index: 3, text: "Second" },
+    ]);
+
+    expect(paragraphs).toEqual([
+      "First second third",
+      "Second",
+    ]);
+  });
+
   it("derives the base key when it is missing or blank", () => {
     const paragraphs = buildParagraphsFromFrames([
       { filename: "10.png", baseKey: "", index: 1, text: "First" },

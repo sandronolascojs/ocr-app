@@ -23,6 +23,12 @@ describe("compareImageFilenames", () => {
     expect(files).toEqual(["1.png", "2.png", "2.1.png", "10.png"]);
   });
 
+  it("sorts decimal variants correctly (1, 1.1, 1.2, 2, 3)", () => {
+    const files = ["2.png", "1.2.png", "3.png", "1.png", "1.1.png"];
+    files.sort(compareImageFilenames);
+    expect(files).toEqual(["1.png", "1.1.png", "1.2.png", "2.png", "3.png"]);
+  });
+
   it("keeps lexical order when names are non numeric", () => {
     const files = ["beta.png", "alpha.png"];
     files.sort(compareImageFilenames);

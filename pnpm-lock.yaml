@@ -193,7 +193,7 @@ importers:
         version: 5.0.9(@types/react@19.2.7)(react@19.2.1)(use-sync-external-store@1.6.0(react@19.2.1))
     devDependencies:
       '@playwright/test':
-        specifier: ^1.57.0
+        specifier: ^1.49.0
         version: 1.57.0
       '@tailwindcss/postcss':
         specifier: ^4
@@ -222,9 +222,6 @@ importers:
       eslint-config-next:
         specifier: 16.0.6
         version: 16.0.6(@typescript-eslint/parser@8.48.0(eslint@9.39.1(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.1(jiti@2.6.1))(typescript@5.9.3)
-      jszip:
-        specifier: ^3.10.1
-        version: 3.10.1
       shadcn:
         specifier: ^3.5.1
         version: 3.5.1(@types/node@20.19.25)(typescript@5.9.3)

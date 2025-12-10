@@ -13,7 +13,7 @@ import {
   compareImageFilenames,
   getBaseKeyFromFilename,
 } from "@/lib/ocr/utils";
-import { canonicalizeImageEntry } from "@/lib/ocr";
+import { validateProcessableImageEntry } from "@/lib/ocr";
 import {
   getJobRootDir,
   getJobRawDir,
@@ -228,7 +228,6 @@ const streamAndProcessZip = async ({
     contentType: "application/zip",
   });
 
-  const usedBases = new Set<string>();
   const cropsMeta: CropMeta[] = [];
   let processedImages = 0;
   let thumbnailKey: string | null = null;
@@ -240,36 +239,29 @@ const streamAndProcessZip = async ({
     }
 
     const entryName = entry.path;
-    if (entryName.startsWith("__MACOSX/")) {
+    const processable = validateProcessableImageEntry(entryName);
+    if (!processable) {
       entry.autodrain();
       continue;
     }
-
-    const base = path.basename(entryName);
-    if (base.startsWith("._")) {
-      entry.autodrain();
-      continue;
-    }
-
-    if (!/\.(png|jpe?g)$/i.test(base)) {
-      entry.autodrain();
-      continue;
-    }
-
-    const canonical = canonicalizeImageEntry(base, usedBases);
-    if (!canonical) {
-      entry.autodrain();
-      continue;
-    }
-
-    const cropFilename = `${canonical.baseName}.png`;
 
     const fileBuffer = await entry.buffer();
     const normalizedBuffer = await normalizeBufferTo1280x720(fileBuffer);
     const cropBuffer = await cropSubtitleFromBuffer(normalizedBuffer);
 
-    archive.append(normalizedBuffer, { name: cropFilename });
+    // Only include base images (1, 2, 3, etc.) in the final ZIP
+    // Skip decimal variants (1.1, 1.2, etc.) from the ZIP
+    if (processable.shouldIncludeInZip) {
+      const zipFilename = `${processable.baseName}.png`;
+      archive.append(normalizedBuffer, { name: zipFilename });
+    }
 
+    // Create crop for ALL images (including 1.1, 1.2, etc.) for OCR processing
+    // Use original filename to preserve the relationship
+    const cropFilename = processable.originalName.replace(
+      /\.(png|jpe?g)$/i,
+      ".png"
+    );
     const cropKey = getJobCropKey(jobId, cropFilename);
     await uploadBufferToObject({
       key: cropKey,
