@@ -31,12 +31,10 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertTriangle } from "lucide-react";
+import { ApiKeyAlert } from "@/components/api-key-alert";
 import { toast } from "sonner";
 import { JobsStatus, JobStep } from "@/types";
-import { cn } from "@/lib/utils";
-import Link from "next/link";
+import { downloadSignedUrl } from "@/lib/utils";
 
 // ---------- Zod schema para el form de upload ----------
 
@@ -70,15 +68,6 @@ const statusVariant: Record<JobsStatus, React.ComponentProps<typeof Badge>["vari
     DONE: "default",
     ERROR: "destructive",
   };
-
-// ---------- Helpers para descargar desde URLs firmadas ----------
-
-const openSignedUrl = (url: string) => {
-  const newWindow = window.open(url, "_blank", "noopener,noreferrer");
-  if (!newWindow) {
-    window.location.href = url;
-  }
-};
 
 // ---------- Página principal ----------
 
@@ -115,8 +104,9 @@ export const NewJobView = () => {
   const apiKeysQuery = useApiKeys();
   
   // Check if user has an active OpenAI API key
+  // Only compute after query succeeds to ensure consistent behavior
   const apiKeys = apiKeysQuery.data ?? [];
-  const hasOpenAiKey = apiKeys.some(
+  const hasOpenAiKey = apiKeysQuery.isSuccess && apiKeys.some(
     (key) => key.provider === ApiKeyProvider.OPENAI && key.isActive
   );
 
@@ -165,19 +155,19 @@ export const NewJobView = () => {
   const handleDownloadTxt = () => {
     const url = resultQuery.ocrResult?.txt?.url;
     if (!url) return;
-    openSignedUrl(url);
+    downloadSignedUrl(url);
   };
 
   const handleDownloadDocx = () => {
     const url = resultQuery.ocrResult?.docx?.url;
     if (!url) return;
-    openSignedUrl(url);
+    downloadSignedUrl(url);
   };
 
   const handleDownloadRawZip = () => {
     const url = resultQuery.ocrResult?.rawZip?.url;
     if (!url) return;
-    openSignedUrl(url);
+    downloadSignedUrl(url);
   };
 
   const progressPct = useMemo(() => {
@@ -199,25 +189,7 @@ export const NewJobView = () => {
           </p>
         </header>
 
-        {!hasOpenAiKey && (
-          <Alert variant="destructive" className="border-destructive/50 bg-destructive/10">
-            <AlertTriangle className="h-5 w-5 text-destructive" />
-            <AlertTitle className="text-base font-semibold text-destructive">
-              OpenAI API Key Required
-            </AlertTitle>
-            <AlertDescription className="text-sm text-destructive/90">
-              You need to add an OpenAI API key to use the OCR processing feature.
-              <br />
-              <Link
-                href="/settings/api-keys"
-                className="mt-2 inline-flex items-center font-semibold text-destructive underline underline-offset-4 transition-colors hover:text-destructive/80"
-              >
-                Go to Settings → API Keys
-              </Link>{" "}
-              to add your API key.
-            </AlertDescription>
-          </Alert>
-        )}
+        <ApiKeyAlert />
 
         <div className="grid flex-1 gap-6 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.3fr)]">
           {/* Upload Card */}

@@ -12,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Image as ImageIcon } from "lucide-react"
-import { cn, formatBytes } from "@/lib/utils"
+import { cn, formatBytes, downloadSignedUrl } from "@/lib/utils"
 import { useImages } from "@/hooks/http"
 import { usePagination } from "@/hooks/ui/usePagination"
 import { trpc } from "@/trpc/client"
@@ -25,13 +25,6 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination"
-
-const openSignedUrl = (url: string) => {
-  const newWindow = window.open(url, "_blank", "noopener,noreferrer")
-  if (!newWindow) {
-    window.location.href = url
-  }
-}
 
 interface ImagesViewProps {}
 
@@ -217,7 +210,7 @@ const ImageCard = ({ image }: ImageCardProps) => {
 
   const handleDownload = () => {
     if (!image.zipUrl) return
-    openSignedUrl(image.zipUrl.url)
+    downloadSignedUrl(image.zipUrl.url)
   }
 
   return (

@@ -1,7 +1,7 @@
 import { createWriteStream, createReadStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { Readable } from "node:stream";
+import { PassThrough, Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import {
@@ -15,6 +15,7 @@ import {
   type GetObjectCommandInput,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { Upload } from "@aws-sdk/lib-storage";
 
 import { env } from "@/env.mjs";
 
@@ -49,6 +50,8 @@ export type SignedDownloadUrl = SignedUrlBase & {
 
 const createExpiryIso = (ttlSeconds: number): string =>
   new Date(Date.now() + ttlSeconds * 1000).toISOString();
+
+const DEFAULT_STREAM_UPLOAD_CACHE_CONTROL = "private, max-age=0, must-revalidate";
 
 /**
  * Sanitizes a filename for use in Content-Disposition header.
@@ -147,6 +150,35 @@ export const createSignedDownloadUrl = async (params: {
   };
 };
 
+export const createSignedDownloadUrlWithTtl = async (params: {
+  key: string;
+  responseContentType: string;
+  downloadFilename: string;
+  ttlSeconds: number;
+}): Promise<SignedDownloadUrl> => {
+  const sanitizedFilename = sanitizeFilename(params.downloadFilename);
+  const encodedFilename = encodeFilenameRfc5987(params.downloadFilename);
+  const contentDisposition = `attachment; filename="${sanitizedFilename}"; filename*=UTF-8''${encodedFilename}`;
+
+  const command = new GetObjectCommand({
+    Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+    Key: params.key,
+    ResponseContentType: params.responseContentType,
+    ResponseContentDisposition: contentDisposition,
+  } satisfies GetObjectCommandInput);
+
+  const url = await getSignedUrl(r2Client, command, {
+    expiresIn: params.ttlSeconds,
+  });
+
+  return {
+    key: params.key,
+    url,
+    headers: {},
+    expiresAt: createExpiryIso(params.ttlSeconds),
+  };
+};
+
 export const ensureObjectExists = async (key: string): Promise<boolean> => {
   try {
     await r2Client.send(
@@ -184,6 +216,21 @@ export const downloadObjectToFile = async (params: {
   await pipeline(readable, createWriteStream(params.filePath));
 };
 
+export const downloadObjectStream = async (key: string): Promise<Readable> => {
+  const response = await r2Client.send(
+    new GetObjectCommand({
+      Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+      Key: key,
+    })
+  );
+
+  if (!response.Body) {
+    throw new Error(`R2 object ${key} has no body to download.`);
+  }
+
+  return response.Body as Readable;
+};
+
 export const uploadFileToObject = async (params: {
   key: string;
   filePath: string;
@@ -199,6 +246,76 @@ export const uploadFileToObject = async (params: {
       CacheControl: params.cacheControl,
     })
   );
+};
+
+export const uploadBufferToObject = async (params: {
+  key: string;
+  body: Buffer;
+  contentType: string;
+  cacheControl?: string;
+}): Promise<void> => {
+  await r2Client.send(
+    new PutObjectCommand({
+      Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+      Key: params.key,
+      Body: params.body,
+      ContentType: params.contentType,
+      CacheControl: params.cacheControl ?? DEFAULT_STREAM_UPLOAD_CACHE_CONTROL,
+    })
+  );
+};
+
+export const uploadStreamToObject = async (params: {
+  key: string;
+  stream: Readable;
+  contentType: string;
+  cacheControl?: string;
+}): Promise<void> => {
+  const uploader = new Upload({
+    client: r2Client,
+    params: {
+      Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+      Key: params.key,
+      Body: params.stream,
+      ContentType: params.contentType,
+      CacheControl: params.cacheControl ?? DEFAULT_STREAM_UPLOAD_CACHE_CONTROL,
+    },
+    queueSize: 4,
+    partSize: 8 * 1024 * 1024, // 8MB parts to balance memory and requests
+    leavePartsOnError: false,
+  });
+
+  await uploader.done();
+};
+
+export const uploadStreamToObjectWithSize = async (params: {
+  key: string;
+  streamFactory: () => Readable;
+  contentType: string;
+  cacheControl?: string;
+}): Promise<number> => {
+  let sizeBytes = 0;
+
+  const countingStream = new Transform({
+    transform(chunk, _encoding, callback) {
+      sizeBytes += chunk.length;
+      callback(null, chunk);
+    },
+  });
+
+  const upstream = params.streamFactory();
+  const passThrough = new PassThrough();
+
+  upstream.pipe(countingStream).pipe(passThrough);
+
+  await uploadStreamToObject({
+    key: params.key,
+    stream: passThrough,
+    contentType: params.contentType,
+    cacheControl: params.cacheControl,
+  });
+
+  return sizeBytes;
 };
 
 export const deleteObjectIfExists = async (key: string): Promise<void> => {

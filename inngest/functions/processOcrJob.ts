@@ -1,20 +1,19 @@
 import * as fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
-import AdmZip from "adm-zip";
+import archiver from "archiver";
+import { Transform } from "node:stream";
 import sharp from "sharp";
+import unzipper from "unzipper";
 import { inngest } from "@/inngest/client";
 import { db } from "@/db";
 import { ocrJobs, ocrJobFrames } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import {
   compareImageFilenames,
-  extractImagesFromZip,
-  normalizeTo1280x720,
-  cropSubtitleToFile,
-  imageFileToDataUrl,
   getBaseKeyFromFilename,
 } from "@/lib/ocr/utils";
+import { canonicalizeImageEntry } from "@/lib/ocr";
 import {
   getJobRootDir,
   getJobRawDir,
@@ -37,12 +36,16 @@ import type { OpenAI } from "openai";
 import { InngestFunctions } from "@/types/enums/inngest/inngestFunctions.enum";
 import { AI_CONSTANTS } from "@/constants/ai.constants";
 import {
-  downloadObjectToFile,
   getJobDocxKey,
   getJobRawArchiveKey,
   getJobTxtKey,
+  getJobCropKey,
   getJobThumbnailKey,
   uploadFileToObject,
+  uploadBufferToObject,
+  uploadStreamToObject,
+  createSignedDownloadUrlWithTtl,
+  downloadObjectStream,
 } from "@/lib/storage";
 
 const BATCH_SLEEP_INTERVAL = "20s";
@@ -58,7 +61,8 @@ type ChatCompletionContent = string | ChatCompletionContentPart[];
 
 type CropMeta = {
   filename: string;
-  cropPath: string;
+  cropKey: string;
+  cropSignedUrl: string;
 };
 
 type WorkspacePaths = {
@@ -77,6 +81,14 @@ type StorageKeys = {
   txtKey: string;
   docxKey: string;
   rawZipKey: string;
+};
+
+type StreamingArtifacts = {
+  cropsMeta: CropMeta[];
+  totalImages: number;
+  rawZipKey: string | null;
+  rawZipSizeBytes: number | null;
+  thumbnailKey: string | null;
 };
 
 type BatchArtifacts = {
@@ -128,78 +140,197 @@ const extractTextFromCompletion = (
   return "";
 };
 
-const preprocessJob = async ({
-  jobId,
-  paths,
-}: {
-  jobId: string;
-  paths: WorkspacePaths;
-}): Promise<{ cropsMeta: CropMeta[]; totalImages: number }> => {
-  await fs.rm(paths.rawDir, { recursive: true, force: true });
-  await fs.rm(paths.normalizedDir, { recursive: true, force: true });
-  await fs.rm(paths.cropsDir, { recursive: true, force: true });
+const CROP_SIGNED_URL_TTL_SECONDS = 60 * 60 * 24; // 24 hours
 
-  await fs.mkdir(paths.rawDir, { recursive: true });
-  await fs.mkdir(paths.normalizedDir, { recursive: true });
-  await fs.mkdir(paths.cropsDir, { recursive: true });
+const normalizeBufferTo1280x720 = async (input: Buffer): Promise<Buffer> => {
+  const image = sharp(input);
+  const meta = await image.metadata();
 
-  const imagePaths = await extractImagesFromZip(paths.zipPath, paths.rawDir);
-  await db
-    .update(ocrJobs)
-    .set({
-      status: JobsStatus.PROCESSING,
-      totalImages: imagePaths.length,
-      processedImages: 0,
-    })
-    .where(eq(ocrJobs.jobId, jobId));
+  const targetW = 1280;
+  const targetH = 720;
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
 
-  const normalizedPaths: string[] = [];
-  for (const sourcePath of imagePaths) {
-    const normalizedPath = path.join(
-      paths.normalizedDir,
-      path.basename(sourcePath)
-    );
-    await normalizeTo1280x720(sourcePath, normalizedPath);
-    normalizedPaths.push(normalizedPath);
+  if (!width || !height) {
+    return image.resize(targetW, targetH, { fit: "contain" }).png().toBuffer();
   }
 
-  const sortedNormalized = [...normalizedPaths].sort((a, b) => {
-    const comparison = compareImageFilenames(
-      path.basename(a),
-      path.basename(b)
-    );
-    if (comparison !== 0) {
-      return comparison;
-    }
-    return a.localeCompare(b);
+  const aspect = width / height;
+  const targetAspect = targetW / targetH;
+
+  if (Math.abs(aspect - targetAspect) < 0.01) {
+    return image.resize(targetW, targetH).png().toBuffer();
+  }
+
+  return image
+    .resize(targetW, targetH, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 1 },
+    })
+    .png()
+    .toBuffer();
+};
+
+const cropSubtitleFromBuffer = async (
+  normalizedBuffer: Buffer
+): Promise<Buffer> => {
+  const image = sharp(normalizedBuffer);
+  const meta = await image.metadata();
+
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
+
+  if (!width || !height) {
+    return image.png().toBuffer();
+  }
+
+  const roiHeight = Math.floor(height * 0.32);
+  const top = Math.max(0, height - roiHeight);
+
+  return image
+    .extract({ left: 0, top, width, height: roiHeight })
+    .png()
+    .toBuffer();
+};
+
+const createThumbnailFromBuffer = async (buffer: Buffer): Promise<Buffer> => {
+  return sharp(buffer)
+    .resize(200, 200, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+};
+
+const streamAndProcessZip = async ({
+  jobId,
+  zipKey,
+  storageKeys,
+}: {
+  jobId: string;
+  zipKey: string;
+  storageKeys: StorageKeys;
+}): Promise<StreamingArtifacts> => {
+  const zipReadable = await downloadObjectStream(zipKey);
+  const unzipStream = zipReadable.pipe(unzipper.Parse({ forceStream: true }));
+
+  const archive = archiver("zip", { zlib: { level: 9 } });
+  let filteredZipSizeBytes = 0;
+  const sizeCounter = new Transform({
+    transform(chunk, _encoding, callback) {
+      filteredZipSizeBytes += chunk.length;
+      callback(null, chunk);
+    },
   });
 
+  const archiveOutput = archive.pipe(sizeCounter);
+  const filteredZipUploadPromise = uploadStreamToObject({
+    key: storageKeys.rawZipKey,
+    stream: archiveOutput,
+    contentType: "application/zip",
+  });
+
+  const usedBases = new Set<string>();
   const cropsMeta: CropMeta[] = [];
   let processedImages = 0;
+  let thumbnailKey: string | null = null;
 
-  for (const normalizedPath of sortedNormalized) {
-    const filename = path.basename(normalizedPath);
-    const cropPath = path.join(
-      paths.cropsDir,
-      filename.replace(/\.[^.]+$/, ".png")
-    );
+  for await (const entry of unzipStream) {
+    if (entry.type === "Directory") {
+      entry.autodrain();
+      continue;
+    }
 
-    await cropSubtitleToFile(normalizedPath, cropPath);
-    cropsMeta.push({ filename, cropPath });
+    const entryName = entry.path;
+    if (entryName.startsWith("__MACOSX/")) {
+      entry.autodrain();
+      continue;
+    }
+
+    const base = path.basename(entryName);
+    if (base.startsWith("._")) {
+      entry.autodrain();
+      continue;
+    }
+
+    if (!/\.(png|jpe?g)$/i.test(base)) {
+      entry.autodrain();
+      continue;
+    }
+
+    const canonical = canonicalizeImageEntry(base, usedBases);
+    if (!canonical) {
+      entry.autodrain();
+      continue;
+    }
+
+    const cropFilename = `${canonical.baseName}.png`;
+
+    const fileBuffer = await entry.buffer();
+    const normalizedBuffer = await normalizeBufferTo1280x720(fileBuffer);
+    const cropBuffer = await cropSubtitleFromBuffer(normalizedBuffer);
+
+    archive.append(normalizedBuffer, { name: cropFilename });
+
+    const cropKey = getJobCropKey(jobId, cropFilename);
+    await uploadBufferToObject({
+      key: cropKey,
+      body: cropBuffer,
+      contentType: "image/png",
+    });
+
+    const signedCropUrl = await createSignedDownloadUrlWithTtl({
+      key: cropKey,
+      responseContentType: "image/png",
+      downloadFilename: cropFilename,
+      ttlSeconds: CROP_SIGNED_URL_TTL_SECONDS,
+    });
+
+    cropsMeta.push({
+      filename: cropFilename,
+      cropKey,
+      cropSignedUrl: signedCropUrl.url,
+    });
+
+    if (!thumbnailKey) {
+      const thumbnailBuffer = await createThumbnailFromBuffer(normalizedBuffer);
+      const thumbKey = getJobThumbnailKey(jobId);
+      await uploadBufferToObject({
+        key: thumbKey,
+        body: thumbnailBuffer,
+        contentType: "image/jpeg",
+        cacheControl: "public, max-age=31536000, immutable",
+      });
+      thumbnailKey = thumbKey;
+    }
 
     processedImages += 1;
     await db
       .update(ocrJobs)
-      .set({ processedImages })
+      .set({
+        processedImages,
+        totalImages: processedImages,
+        status: JobsStatus.PROCESSING,
+      })
       .where(eq(ocrJobs.jobId, jobId));
   }
 
-  await db
-    .update(ocrJobs)
-    .set({ step: JobStep.BATCH_SUBMITTED })
-    .where(eq(ocrJobs.jobId, jobId));
+  await archive.finalize();
+  await filteredZipUploadPromise;
 
-  return { cropsMeta, totalImages: imagePaths.length };
+  const sortedCrops = [...cropsMeta].sort((a, b) => {
+    const comparison = compareImageFilenames(a.filename, b.filename);
+    if (comparison !== 0) {
+      return comparison;
+    }
+    return a.filename.localeCompare(b.filename);
+  });
+
+  return {
+    cropsMeta: sortedCrops,
+    totalImages: processedImages,
+    rawZipKey: processedImages > 0 ? storageKeys.rawZipKey : null,
+    rawZipSizeBytes: processedImages > 0 ? filteredZipSizeBytes : null,
+    thumbnailKey,
+  };
 };
 
 const createBatchArtifacts = async ({
@@ -231,8 +362,7 @@ const createBatchArtifacts = async ({
 
   // Write all lines
   for (let index = 0; index < cropsMeta.length; index++) {
-    const { filename, cropPath } = cropsMeta[index];
-    const dataUrl = await imageFileToDataUrl(cropPath);
+    const { filename, cropSignedUrl } = cropsMeta[index];
     const customId = `job-${jobId}-frame-${index}-${filename}`;
 
     const line = {
@@ -250,7 +380,7 @@ const createBatchArtifacts = async ({
               { type: "text", text: AI_CONSTANTS.PROMPTS.OCR },
               {
                 type: "image_url",
-                image_url: { url: dataUrl },
+                image_url: { url: cropSignedUrl },
               },
             ],
           },
@@ -445,197 +575,6 @@ const saveBatchResults = async ({
     .where(eq(ocrJobs.jobId, jobId));
 };
 
-const buildAndUploadRawZip = async ({
-  jobId,
-  paths,
-  storageKeys,
-}: {
-  jobId: string;
-  paths: WorkspacePaths;
-  storageKeys: StorageKeys;
-}): Promise<{ rawZipKey: string | null; rawZipSizeBytes: number | null; thumbnailKey: string | null }> => {
-  // Extract images from ZIP if not already extracted
-  const listRawImages = async (): Promise<string[]> => {
-    try {
-      const files = await fs.readdir(paths.rawDir);
-      return files.filter((file) => /\.(png|jpe?g)$/i.test(file));
-    } catch {
-      return [];
-    }
-  };
-
-  let rawImages = await listRawImages();
-  if (!rawImages.length && paths.zipPath) {
-    try {
-      await fs.mkdir(paths.rawDir, { recursive: true });
-      await extractImagesFromZip(paths.zipPath, paths.rawDir);
-      rawImages = await listRawImages();
-    } catch (error) {
-      console.error(`Failed to extract raw images for job ${jobId}:`, error);
-      return { rawZipKey: null, rawZipSizeBytes: null, thumbnailKey: null };
-    }
-  }
-
-  if (!rawImages.length) {
-    return { rawZipKey: null, rawZipSizeBytes: null, thumbnailKey: null };
-  }
-
-  // Prune decimal variants
-  const integerNameRegex = /^\d+$/;
-  const decimalVariantRegex = /^(\d+)\.(\d+)$/;
-  const baseNames = new Set(
-    rawImages
-      .map((filename) => filename.replace(/\.[^.]+$/, ""))
-      .filter((name) => integerNameRegex.test(name))
-  );
-
-  const variants = rawImages.filter((filename) => {
-    const name = filename.replace(/\.[^.]+$/, "");
-    const match = name.match(decimalVariantRegex);
-    return Boolean(match && baseNames.has(match[1]));
-  });
-
-  await Promise.all(
-    variants.map((variant) =>
-      fs.unlink(path.join(paths.rawDir, variant)).catch(() => undefined)
-    )
-  );
-
-  // Get filtered images after pruning
-  const filteredRawImages = await listRawImages();
-  if (!filteredRawImages.length) {
-    return { rawZipKey: null, rawZipSizeBytes: null, thumbnailKey: null };
-  }
-
-  // Generate thumbnail from first image (before creating zip)
-  const thumbnailKey = getJobThumbnailKey(jobId);
-  let generatedThumbnailKey: string | null = null;
-  
-  try {
-    // Get first image, sorted by filename
-    const sortedImages = filteredRawImages
-      .sort((a, b) => compareImageFilenames(a, b));
-    
-    if (sortedImages.length > 0) {
-      const firstImagePath = path.join(paths.rawDir, sortedImages[0]);
-      const thumbnailPath = path.join(paths.jobRootDir, "thumbnail.jpg");
-
-      // Generate thumbnail: 200x200px, maintain aspect ratio, fit inside
-      await sharp(firstImagePath)
-        .resize(200, 200, {
-          fit: "inside",
-          withoutEnlargement: true,
-        })
-        .jpeg({ quality: 85 })
-        .toFile(thumbnailPath);
-
-      // Upload thumbnail to R2
-      await uploadFileToObject({
-        key: thumbnailKey,
-        filePath: thumbnailPath,
-        contentType: "image/jpeg",
-        cacheControl: "public, max-age=31536000, immutable",
-      });
-
-      // Clean up local thumbnail
-      await fs.unlink(thumbnailPath).catch(() => undefined);
-      
-      generatedThumbnailKey = thumbnailKey;
-    }
-  } catch (error) {
-    console.error(`Failed to generate thumbnail for job ${jobId}:`, error);
-    // Continue even if thumbnail generation fails
-  }
-
-  // Create raw zip archive with filtered images
-  const archive = new AdmZip();
-  filteredRawImages
-    .sort((a, b) => compareImageFilenames(a, b))
-    .forEach((filename) => {
-      archive.addLocalFile(path.join(paths.rawDir, filename), "", filename);
-    });
-
-  await fs.mkdir(path.dirname(paths.rawArchivePath), { recursive: true });
-  await archive.writeZipPromise(paths.rawArchivePath);
-
-  // Calculate raw zip size
-  const rawZipStats = fsSync.statSync(paths.rawArchivePath);
-  const rawZipSizeBytes = rawZipStats.size;
-
-  // Upload to storage
-  await uploadFileToObject({
-    key: storageKeys.rawZipKey,
-    filePath: paths.rawArchivePath,
-    contentType: "application/zip",
-  });
-
-  return {
-    rawZipKey: storageKeys.rawZipKey,
-    rawZipSizeBytes,
-    thumbnailKey: generatedThumbnailKey,
-  };
-};
-
-const generateThumbnail = async ({
-  jobId,
-  paths,
-  thumbnailKey,
-}: {
-  jobId: string;
-  paths: WorkspacePaths;
-  thumbnailKey: string;
-}): Promise<string | null> => {
-  try {
-    const rawImages = await fs.readdir(paths.rawDir).catch(() => []);
-    const normalizedImages = await fs.readdir(paths.normalizedDir).catch(() => []);
-
-    // Prefer raw images, fallback to normalized
-    const imageFiles = rawImages.length > 0 ? rawImages : normalizedImages;
-    const imageDir = rawImages.length > 0 ? paths.rawDir : paths.normalizedDir;
-
-    if (!imageFiles.length) {
-      return null;
-    }
-
-    // Get first image, sorted by filename
-    const sortedImages = imageFiles
-      .filter((file) => /\.(png|jpe?g)$/i.test(file))
-      .sort((a, b) => compareImageFilenames(a, b));
-
-    if (!sortedImages.length) {
-      return null;
-    }
-
-    const firstImagePath = path.join(imageDir, sortedImages[0]);
-    const thumbnailPath = path.join(paths.jobRootDir, "thumbnail.jpg");
-
-    // Generate thumbnail: 200x200px, maintain aspect ratio, fit inside
-    await sharp(firstImagePath)
-      .resize(200, 200, {
-        fit: "inside",
-        withoutEnlargement: true,
-      })
-      .jpeg({ quality: 85 })
-      .toFile(thumbnailPath);
-
-    // Upload thumbnail to R2
-    await uploadFileToObject({
-      key: thumbnailKey,
-      filePath: thumbnailPath,
-      contentType: "image/jpeg",
-      cacheControl: "public, max-age=31536000, immutable",
-    });
-
-    // Clean up local thumbnail
-    await fs.unlink(thumbnailPath).catch(() => undefined);
-
-    return thumbnailKey;
-  } catch (error) {
-    console.error(`Failed to generate thumbnail for job ${jobId}:`, error);
-    return null;
-  }
-};
-
 const buildDocuments = async ({
   jobId,
   paths,
@@ -750,27 +689,6 @@ const ensureWorkspaceLayout = async (paths: WorkspacePaths) => {
   await fs.mkdir(VOLUME_DIRS.tmpBase, { recursive: true });
 };
 
-const loadCropsFromDisk = async (cropsDir: string): Promise<CropMeta[]> => {
-  try {
-    const files = await fs.readdir(cropsDir);
-    return files
-      .filter((file) => /\.(png)$/i.test(file))
-      .sort((a, b) => {
-        const comparison = compareImageFilenames(a, b);
-        if (comparison !== 0) {
-          return comparison;
-        }
-        return a.localeCompare(b);
-      })
-      .map((filename) => ({
-        filename,
-        cropPath: path.join(cropsDir, filename),
-      }));
-  } catch {
-    return [];
-  }
-};
-
 export const processOcrJob = inngest.createFunction(
   { id: InngestFunctions.PROCESS_OCR_JOB },
   { event: InngestEvents.ZIP_UPLOADED },
@@ -840,42 +758,38 @@ export const processOcrJob = inngest.createFunction(
       let rawZipKeyForJob: string | null = job.rawZipPath ?? null;
 
       await ensureWorkspaceLayout(workspacePaths);
-      await downloadObjectToFile({
-        key: storageZipKey,
-        filePath: workspacePaths.zipPath,
-      });
 
-      // Build and upload raw zip immediately after downloading ZIP
-      // Also generate thumbnail at the same time to save processing
-      // This ensures the raw zip and thumbnail are available even if the job fails later
-      const rawZipResult = await step.run(
-        OcrStepId.BuildRawZip,
-        () => buildAndUploadRawZip({ jobId, paths: workspacePaths, storageKeys })
+      const streamingResult = await step.run(
+        OcrStepId.PreprocessImagesAndCrops,
+        () =>
+          streamAndProcessZip({
+            jobId,
+            zipKey: storageZipKey,
+            storageKeys,
+          })
       );
-      rawZipKeyForJob = rawZipResult.rawZipKey;
-      
-      // Update job with raw zip and thumbnail info
+
+      totalImages = streamingResult.totalImages;
+      rawZipKeyForJob = streamingResult.rawZipKey;
+
       await db
         .update(ocrJobs)
         .set({
-          rawZipPath: rawZipKeyForJob,
-          rawZipSizeBytes: rawZipResult.rawZipSizeBytes,
-          thumbnailKey: rawZipResult.thumbnailKey,
+          rawZipPath: streamingResult.rawZipKey,
+          rawZipSizeBytes: streamingResult.rawZipSizeBytes,
+          thumbnailKey: streamingResult.thumbnailKey,
+          step: JobStep.BATCH_SUBMITTED,
+          totalImages,
+          processedImages: totalImages,
+          status: JobsStatus.PROCESSING,
         })
         .where(eq(ocrJobs.jobId, jobId));
 
-      let cropsMeta: CropMeta[] = [];
-      if (currentStep === JobStep.PREPROCESSING) {
-        const { cropsMeta: processedCrops, totalImages: processedTotal } =
-          await step.run(OcrStepId.PreprocessImagesAndCrops, () =>
-            preprocessJob({ jobId, paths: workspacePaths })
-          );
-        cropsMeta = processedCrops;
-        totalImages = processedTotal;
-        currentStep = JobStep.BATCH_SUBMITTED;
-      } else {
-        cropsMeta = await loadCropsFromDisk(workspacePaths.cropsDir);
+      const cropsMeta: CropMeta[] = streamingResult.cropsMeta;
+      if (!cropsMeta.length) {
+        throw new Error("No crops were generated from the provided ZIP file.");
       }
+      currentStep = JobStep.BATCH_SUBMITTED;
 
       if (currentStep === JobStep.BATCH_SUBMITTED) {
         if (!batchId || !batchInputFileId) {
@@ -944,6 +858,15 @@ export const processOcrJob = inngest.createFunction(
             storageKeys,
           })
         );
+
+        // Ensure the job reflects the final step in case any prior update was skipped
+        await db
+          .update(ocrJobs)
+          .set({
+            step: JobStep.DOCS_BUILT,
+            status: JobsStatus.DONE,
+          })
+          .where(eq(ocrJobs.jobId, jobId));
       }
 
       return {

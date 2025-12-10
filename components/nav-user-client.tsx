@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import {
   BadgeCheck,
@@ -7,16 +7,12 @@ import {
   CreditCard,
   LogOut,
   Sparkles,
-} from "lucide-react"
-import Link from "next/link"
-import { useRouter } from "next/navigation"
-import { signOut } from "@/lib/auth/client"
-import { toast } from "sonner"
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@/components/ui/avatar"
+} from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { signOut } from "@/lib/auth/client";
+import { toast } from "sonner";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,53 +21,54 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@/components/ui/dropdown-menu";
 import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
-} from "@/components/ui/sidebar"
+} from "@/components/ui/sidebar";
 
 interface NavUserClientProps {
   user: {
-    name: string
-    email: string
-    avatar: string
-  }
+    name: string;
+    email: string;
+    avatar: string | null | undefined;
+  };
 }
 
 export const NavUserClient = ({ user }: NavUserClientProps) => {
-  const { isMobile } = useSidebar()
-  const router = useRouter()
+  const { isMobile } = useSidebar();
+  const router = useRouter();
 
   const getAvatarFallback = (): string => {
-    const trimmedName = (user.name || "").trim()
+    const trimmedName = (user.name || "").trim();
     if (trimmedName.length > 0) {
-      return trimmedName[0].toUpperCase()
+      return trimmedName[0].toUpperCase();
     }
-    const trimmedEmail = (user.email || "").trim()
+    const trimmedEmail = (user.email || "").trim();
     if (trimmedEmail.length > 0) {
-      return trimmedEmail[0].toUpperCase()
+      return trimmedEmail[0].toUpperCase();
     }
-    return "U"
-  }
+    return "U";
+  };
 
   const handleLogout = async () => {
     try {
       await signOut({
         router,
         onError: (error) => {
-          console.error("Failed to sign out:", error)
+          console.error("Failed to sign out:", error);
           toast.error("Failed to sign out", {
-            description: "An error occurred while signing out. Please try again.",
-          })
+            description:
+              "An error occurred while signing out. Please try again.",
+          });
         },
-      })
+      });
     } catch (error) {
       // Error already handled by onError callback
     }
-  }
+  };
 
   return (
     <SidebarMenu>
@@ -83,7 +80,9 @@ export const NavUserClient = ({ user }: NavUserClientProps) => {
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
               <Avatar className="h-8 w-8 rounded-lg">
-                <AvatarImage src={user.avatar} alt={user.name} />
+                {user.avatar && (
+                  <AvatarImage src={user.avatar} alt={user.name} />
+                )}
                 <AvatarFallback className="rounded-lg">
                   {getAvatarFallback()}
                 </AvatarFallback>
@@ -104,7 +103,9 @@ export const NavUserClient = ({ user }: NavUserClientProps) => {
             <DropdownMenuLabel className="p-0 font-normal">
               <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
                 <Avatar className="h-8 w-8 rounded-lg">
-                  <AvatarImage src={user.avatar} alt={user.name} />
+                  {user.avatar && (
+                    <AvatarImage src={user.avatar} alt={user.name} />
+                  )}
                   <AvatarFallback className="rounded-lg">
                     {getAvatarFallback()}
                   </AvatarFallback>
@@ -148,6 +149,5 @@ export const NavUserClient = ({ user }: NavUserClientProps) => {
         </DropdownMenu>
       </SidebarMenuItem>
     </SidebarMenu>
-  )
-}
-
+  );
+};

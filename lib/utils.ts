@@ -15,3 +15,15 @@ export function formatBytes(bytes: number | null): string {
   )
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
 }
+
+export function downloadSignedUrl(url: string) {
+  // Use a temporary anchor to trigger a single, direct download without double navigation.
+  const anchor = document.createElement("a")
+  anchor.href = url
+  anchor.target = "_self"
+  anchor.rel = "noopener noreferrer"
+  anchor.download = ""
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+}

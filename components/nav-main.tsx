@@ -72,7 +72,9 @@ export const NavMain = ({ items }: NavMainProps) => {
                       const isActive = subPath === currentPath
 
                       return (
-                        <SidebarMenuSubItem key={sub.url || `sub-item-${index}`}>
+                        <SidebarMenuSubItem
+                          key={`${item.url}-${sub.url || sub.title}-${index}`}
+                        >
                           <SidebarMenuSubButton
                             asChild
                             isActive={isActive}

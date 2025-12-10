@@ -30,16 +30,9 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { cn, formatBytes } from "@/lib/utils"
+import { cn, formatBytes, downloadSignedUrl } from "@/lib/utils"
 import { Download, Search, X } from "lucide-react"
 import { QUERY_CONFIG } from "@/constants/query.constants"
-
-const openSignedUrl = (url: string) => {
-  const newWindow = window.open(url, "_blank", "noopener,noreferrer")
-  if (!newWindow) {
-    window.location.href = url
-  }
-}
 
 type Document = {
   jobId: string
@@ -415,7 +408,7 @@ interface DocumentActionsProps {
 const DocumentActions = ({ document }: DocumentActionsProps) => {
   const handleDownload = () => {
     if (!document.url) return
-    openSignedUrl(document.url.url)
+    downloadSignedUrl(document.url.url)
   }
 
   return (

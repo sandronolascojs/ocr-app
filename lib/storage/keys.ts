@@ -26,3 +26,6 @@ export const getJobBatchJsonlKey = (jobId: string) =>
 export const getJobThumbnailKey = (jobId: string) =>
   `${getJobRootKey(jobId)}/thumbnail.jpg`;
 
+export const getJobCropKey = (jobId: string, filename: string) =>
+  `${getJobRootKey(jobId)}/crops/${filename}`;
+

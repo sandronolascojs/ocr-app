@@ -40,7 +40,7 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination"
 import { JobsStatus, JobStep } from "@/types"
-import { cn } from "@/lib/utils"
+import { cn, downloadSignedUrl } from "@/lib/utils"
 import { MoreHorizontal, Download, Eye, FileText } from "lucide-react"
 
 const statusLabel: Record<JobsStatus, string> = {
@@ -65,13 +65,6 @@ const statusVariant: Record<
   PROCESSING: "default",
   DONE: "default",
   ERROR: "destructive",
-}
-
-const openSignedUrl = (url: string) => {
-  const newWindow = window.open(url, "_blank", "noopener,noreferrer")
-  if (!newWindow) {
-    window.location.href = url
-  }
 }
 
 type Job = {
@@ -406,19 +399,19 @@ const JobActions = ({ job }: JobActionsProps) => {
   const handleDownloadTxt = () => {
     const url = resultQuery.ocrResult?.txt?.url
     if (!url) return
-    openSignedUrl(url)
+    downloadSignedUrl(url)
   }
 
   const handleDownloadDocx = () => {
     const url = resultQuery.ocrResult?.docx?.url
     if (!url) return
-    openSignedUrl(url)
+    downloadSignedUrl(url)
   }
 
   const handleDownloadRawZip = () => {
     const url = resultQuery.ocrResult?.rawZip?.url
     if (!url) return
-    openSignedUrl(url)
+    downloadSignedUrl(url)
   }
 
   const isProcessing =
@@ -435,12 +428,22 @@ const JobActions = ({ job }: JobActionsProps) => {
       <DropdownMenuContent align="end">
         <DropdownMenuLabel>Actions</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={handleViewJob}>
+        <DropdownMenuItem
+          onSelect={(event) => {
+            event.preventDefault()
+            handleViewJob()
+          }}
+        >
           <Eye className="mr-2 h-4 w-4" />
           View Job
         </DropdownMenuItem>
         {isProcessing && (
-          <DropdownMenuItem onClick={handleViewJob}>
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              handleViewJob()
+            }}
+          >
             <FileText className="mr-2 h-4 w-4" />
             View Progress
           </DropdownMenuItem>
@@ -449,21 +452,30 @@ const JobActions = ({ job }: JobActionsProps) => {
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={handleDownloadTxt}
+              onSelect={(event) => {
+                event.preventDefault()
+                handleDownloadTxt()
+              }}
               disabled={resultQuery.isLoading || !resultQuery.ocrResult?.txt}
             >
               <Download className="mr-2 h-4 w-4" />
               Download TXT
             </DropdownMenuItem>
             <DropdownMenuItem
-              onClick={handleDownloadDocx}
+              onSelect={(event) => {
+                event.preventDefault()
+                handleDownloadDocx()
+              }}
               disabled={resultQuery.isLoading || !resultQuery.ocrResult?.docx}
             >
               <Download className="mr-2 h-4 w-4" />
               Download DOCX
             </DropdownMenuItem>
             <DropdownMenuItem
-              onClick={handleDownloadRawZip}
+              onSelect={(event) => {
+                event.preventDefault()
+                handleDownloadRawZip()
+              }}
               disabled={resultQuery.isLoading || !resultQuery.ocrResult?.rawZip}
             >
               <Download className="mr-2 h-4 w-4" />

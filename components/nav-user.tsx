@@ -12,9 +12,9 @@ export const NavUser = async () => {
   }
 
   const user = {
-    name: session.user.name ?? "User",
-    email: session.user.email ?? "",
-    avatar: session.user.image ?? "/avatars/user.jpg",
+    name: session.user.name,
+    email: session.user.email,
+    avatar: session.user.image ?? null,
   }
 
   return <NavUserClient user={user} />
