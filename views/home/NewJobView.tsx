@@ -34,7 +34,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ApiKeyAlert } from "@/components/api-key-alert";
 import { toast } from "sonner";
 import { JobsStatus, JobStep } from "@/types";
-import { downloadSignedUrl } from "@/lib/utils";
+import { downloadSignedUrl, formatBytes } from "@/lib/utils";
 
 // ---------- Zod schema para el form de upload ----------
 
@@ -100,6 +100,7 @@ export const NewJobView = () => {
 
   // Mutations / queries
   const uploadMutation = useUploadOcrZip();
+  const uploadProgress = uploadMutation.uploadProgress;
   const jobQuery = useOcrJob(currentJobId);
   const apiKeysQuery = useApiKeys();
   
@@ -175,6 +176,20 @@ export const NewJobView = () => {
     return Math.round(((job.processedImages ?? 0) / job.totalImages) * 100);
   }, [job?.processedImages, job?.totalImages]);
 
+  const formattedUploadProgress = useMemo(() => {
+    if (!uploadProgress) return null;
+    return {
+      loaded: formatBytes(uploadProgress.loaded),
+      total: formatBytes(uploadProgress.total),
+      percentage: uploadProgress.percentage,
+    };
+  }, [uploadProgress]);
+
+  const formattedFileSize = useMemo(() => {
+    if (!selectedFile) return null;
+    return formatBytes(selectedFile.size);
+  }, [selectedFile?.size]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-1 flex-col gap-6 overflow-auto">
@@ -219,11 +234,11 @@ export const NewJobView = () => {
                       }
                     }}
                   />
-                  {selectedFile && (
+                  {selectedFile && formattedFileSize && (
                     <p className="text-xs text-muted-foreground">
                       Selected:{" "}
                       <span className="font-mono">{selectedFile.name}</span>{" "}
-                      ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)
+                      ({formattedFileSize})
                     </p>
                   )}
                   {errors.file && (
@@ -232,6 +247,23 @@ export const NewJobView = () => {
                     </p>
                   )}
                 </div>
+
+                {formattedUploadProgress && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">
+                        Uploading...
+                      </span>
+                      <span className="font-mono">
+                        {formattedUploadProgress.percentage}%
+                      </span>
+                    </div>
+                    <Progress value={formattedUploadProgress.percentage} />
+                    <p className="text-xs text-muted-foreground">
+                      {formattedUploadProgress.loaded} / {formattedUploadProgress.total}
+                    </p>
+                  </div>
+                )}
 
                 <Button
                   type="submit"
