@@ -8,4 +8,5 @@ export { useCreateApiKey } from "./useCreateApiKey"
 export { useDeleteApiKey } from "./useDeleteApiKey"
 export { useDeleteAllUserStorage } from "./useDeleteAllUserStorage"
 export { useRetryFromStep } from "./useRetryFromStep"
+export { useDeleteOcrJob } from "./useDeleteOcrJob"
 

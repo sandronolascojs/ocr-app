@@ -11,6 +11,7 @@ import {
 import { usePagination } from "@/hooks/ui/usePagination"
 import { useOcrJobs } from "@/hooks/http/useOcrJobs"
 import { useOcrResult } from "@/hooks/http/useOcrResult"
+import { useDeleteOcrJob } from "@/hooks/http/useDeleteOcrJob"
 import { trpc } from "@/trpc/client"
 import {
   Table,
@@ -41,7 +42,8 @@ import {
 } from "@/components/ui/pagination"
 import { JobsStatus, JobStep } from "@/types"
 import { cn, downloadSignedUrl } from "@/lib/utils"
-import { MoreHorizontal, Download, Eye, FileText } from "lucide-react"
+import { MoreHorizontal, Download, Eye, FileText, Trash2 } from "lucide-react"
+import { toast } from "sonner"
 
 const statusLabel: Record<JobsStatus, string> = {
   [JobsStatus.PENDING]: "Pending",
@@ -387,10 +389,16 @@ interface JobActionsProps {
 
 const JobActions = ({ job }: JobActionsProps) => {
   const router = useRouter()
+  const utils = trpc.useUtils()
   const resultQuery = useOcrResult(
     job.hasResults ? job.jobId : null,
     job.status === JobsStatus.DONE && job.hasResults
   )
+  const deleteJobMutation = useDeleteOcrJob({
+    onSuccess: () => {
+      utils.ocr.listJobs.invalidate()
+    },
+  })
 
   const handleViewJob = () => {
     router.push(`/new-job?jobId=${job.jobId}`)
@@ -412,6 +420,21 @@ const JobActions = ({ job }: JobActionsProps) => {
     const url = resultQuery.ocrResult?.rawZip?.url
     if (!url) return
     downloadSignedUrl(url)
+  }
+
+  const handleDeleteJob = async () => {
+    const confirmed = window.confirm(
+      "Are you sure you want to delete this job? This will permanently delete the job and all its files. This action cannot be undone."
+    )
+
+    if (!confirmed) return
+
+    try {
+      await deleteJobMutation.mutateAsync({ jobId: job.jobId })
+    } catch (error) {
+      // Error is already handled by the hook's onError
+      console.error("Failed to delete job:", error)
+    }
   }
 
   const isProcessing =
@@ -483,6 +506,18 @@ const JobActions = ({ job }: JobActionsProps) => {
             </DropdownMenuItem>
           </>
         )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={(event) => {
+            event.preventDefault()
+            handleDeleteJob()
+          }}
+          disabled={deleteJobMutation.isPending}
+          className="text-destructive focus:text-destructive"
+        >
+          <Trash2 className="mr-2 h-4 w-4" />
+          {deleteJobMutation.isPending ? "Deleting..." : "Delete Job"}
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )

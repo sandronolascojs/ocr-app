@@ -7,8 +7,10 @@ import {
   createSignedThumbnailUrl,
   createSignedUploadUrl,
   deleteObjectIfExists,
+  deleteObjectsByPrefix,
   ensureObjectExists,
   getJobZipKey,
+  getJobRootKey,
   type SignedDownloadUrl,
 } from "@/lib/storage";
 import { InngestEvents, JobsStatus, JobStep, ApiKeyProvider } from "@/types";
@@ -176,6 +178,94 @@ export const ocrRouter = createTRPCRouter({
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: `Failed to delete uploaded file: ${error instanceof Error ? error.message : "Unknown error"}`,
+        });
+      }
+    }),
+
+  deleteJob: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { jobId } = input;
+
+      // Load job metadata by jobId
+      const [job] = await ctx.db
+        .select()
+        .from(ocrJobs)
+        .where(eq(ocrJobs.jobId, jobId))
+        .limit(1);
+
+      // Handle missing job
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Job not found",
+        });
+      }
+
+      // Verify ownership
+      if (job.userId !== ctx.userId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have permission to delete this job",
+        });
+      }
+
+      const errors: string[] = [];
+
+      try {
+        // Delete all files under the job's root prefix (includes zip, crops, thumbnail, normalized images, etc.)
+        const jobRootPrefix = getJobRootKey(jobId);
+        try {
+          await deleteObjectsByPrefix(jobRootPrefix);
+        } catch (error) {
+          errors.push(
+            `Failed to delete files under job root: ${error instanceof Error ? error.message : "Unknown error"}`
+          );
+        }
+
+        // Delete individual files that might be outside the root prefix
+        const filesToDelete = [
+          job.zipPath,
+          job.txtPath,
+          job.docxPath,
+          job.rawZipPath,
+          job.thumbnailKey,
+        ].filter((key): key is string => key !== null && key !== undefined);
+
+        for (const key of filesToDelete) {
+          try {
+            await deleteObjectIfExists(key);
+          } catch (error) {
+            errors.push(
+              `Failed to delete file ${key}: ${error instanceof Error ? error.message : "Unknown error"}`
+            );
+          }
+        }
+
+        // Delete the job from database (frames will be deleted automatically via cascade)
+        await ctx.db.delete(ocrJobs).where(eq(ocrJobs.jobId, jobId));
+
+        // If there were errors but we still deleted the job, log them but don't fail
+        if (errors.length > 0) {
+          console.warn(
+            `Job ${jobId} deleted from database, but some files failed to delete:`,
+            errors
+          );
+        }
+
+        return {
+          jobId,
+          deleted: true,
+          errors: errors.length > 0 ? errors : undefined,
+        };
+      } catch (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Failed to delete job: ${error instanceof Error ? error.message : "Unknown error"}`,
         });
       }
     }),
