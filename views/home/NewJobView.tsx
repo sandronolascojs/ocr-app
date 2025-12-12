@@ -342,6 +342,14 @@ export const NewJobView = () => {
                           job.status === JobsStatus.DONE;
                         const isFailed = job.status === JobsStatus.ERROR;
                         const canRetryFromStep = isFailed && !isCompleted;
+
+                        const rightInfo =
+                          s === JobStep.PREPROCESSING
+                            ? `${job.totalImages ?? 0} images`
+                            : s === JobStep.BATCH_SUBMITTED
+                              ? `${job.batchesCompleted ?? 0} / ${job.totalBatches ?? 0} batches`
+                              : null;
+
                         return (
                           <div
                             key={s}
@@ -362,6 +370,11 @@ export const NewJobView = () => {
                               </span>
                             </div>
                             <div className="flex items-center gap-2">
+                              {rightInfo && (
+                                <span className="font-mono text-[10px] text-muted-foreground">
+                                  {rightInfo}
+                                </span>
+                              )}
                               {isCompleted && (
                                 <Badge variant="outline" className="text-[10px]">
                                   done
