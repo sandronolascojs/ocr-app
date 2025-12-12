@@ -189,6 +189,16 @@ export const NewJobView = () => {
     return formatBytes(selectedFile.size);
   }, [selectedFile?.size]);
 
+  const batchesProgressPct = useMemo(() => {
+    if (!job?.totalBatches || job.totalBatches === 0) return 0;
+    return Math.round(((job.batchesCompleted ?? 0) / job.totalBatches) * 100);
+  }, [job?.batchesCompleted, job?.totalBatches]);
+
+  const submittedProgressPct = useMemo(() => {
+    if (!job?.totalImages || job.totalImages === 0) return 0;
+    return Math.round(((job.submittedImages ?? 0) / job.totalImages) * 100);
+  }, [job?.submittedImages, job?.totalImages]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-1 flex-col gap-6 overflow-auto">
@@ -342,14 +352,6 @@ export const NewJobView = () => {
                           job.status === JobsStatus.DONE;
                         const isFailed = job.status === JobsStatus.ERROR;
                         const canRetryFromStep = isFailed && !isCompleted;
-
-                        const rightInfo =
-                          s === JobStep.PREPROCESSING
-                            ? `${job.totalImages ?? 0} images`
-                            : s === JobStep.BATCH_SUBMITTED
-                              ? `${job.batchesCompleted ?? 0} / ${job.totalBatches ?? 0} batches`
-                              : null;
-
                         return (
                           <div
                             key={s}
@@ -370,11 +372,6 @@ export const NewJobView = () => {
                               </span>
                             </div>
                             <div className="flex items-center gap-2">
-                              {rightInfo && (
-                                <span className="font-mono text-[10px] text-muted-foreground">
-                                  {rightInfo}
-                                </span>
-                              )}
                               {isCompleted && (
                                 <Badge variant="outline" className="text-[10px]">
                                   done
@@ -411,34 +408,42 @@ export const NewJobView = () => {
                     </div>
                   </div>
 
-                  {/* Progreso imágenes */}
+                  {/* Progreso dinámico según etapa */}
                   <Separator />
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-muted-foreground">
-                        Frames processed
-                      </span>
-                      <span className="font-mono text-[11px]">
-                        {job.processedImages ?? 0} /{" "}
-                        {job.totalImages ?? 0}
-                      </span>
+                  {job.step === JobStep.PREPROCESSING ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-muted-foreground">
+                          Frames processed
+                        </span>
+                        <span className="font-mono text-[11px]">
+                          {job.processedImages ?? 0} / {job.totalImages ?? 0}
+                        </span>
+                      </div>
+                      <Progress value={progressPct} />
                     </div>
-                    <Progress value={progressPct} />
-                    <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                      <span>
-                        Batches:{" "}
-                        <span className="font-mono">
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-muted-foreground">
+                          Batches
+                        </span>
+                        <span className="font-mono text-[11px]">
                           {job.batchesCompleted ?? 0} / {job.totalBatches ?? 0}
                         </span>
-                      </span>
-                      <span>
-                        Submitted:{" "}
-                        <span className="font-mono">
+                      </div>
+                      <Progress value={batchesProgressPct} />
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-muted-foreground">
+                          Submitted
+                        </span>
+                        <span className="font-mono text-[11px]">
                           {job.submittedImages ?? 0} / {job.totalImages ?? 0}
                         </span>
-                      </span>
+                      </div>
+                      <Progress value={submittedProgressPct} />
                     </div>
-                  </div>
+                  )}
 
                   {/* Debug / detalles */}
                   <Separator />
