@@ -362,6 +362,37 @@ export const ocrRouter = createTRPCRouter({
           thumbnailKey: job.thumbnailKey ?? null,
           createdAt: job.createdAt,
           updatedAt: job.updatedAt,
+          progressPct: (() => {
+            // Images progress
+            const imageProgress =
+              job.totalImages > 0
+                ? Math.min(1, Math.max(0, (job.processedImages ?? 0) / job.totalImages))
+                : 0;
+
+            // Batches progress
+            const batchProgress =
+              job.totalBatches > 0
+                ? Math.min(1, Math.max(0, (job.batchesCompleted ?? 0) / job.totalBatches))
+                : 0;
+
+            // Step progress
+            const stepOrder: JobStep[] = [
+              JobStep.PREPROCESSING,
+              JobStep.BATCH_SUBMITTED,
+              JobStep.RESULTS_SAVED,
+              JobStep.DOCS_BUILT,
+            ];
+            const stepIndex = stepOrder.findIndex((s) => s === job.step);
+            const stepProgress =
+              stepIndex >= 0 ? stepIndex / Math.max(stepOrder.length - 1, 1) : 0;
+
+            const overall =
+              job.status === JobsStatus.DONE
+                ? 1
+                : Math.max(imageProgress, batchProgress, stepProgress);
+
+            return Math.round(overall * 100);
+          })(),
         })),
         total,
         limit,

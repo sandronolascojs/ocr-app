@@ -79,6 +79,7 @@ type Job = {
   totalBatches: number
   batchesCompleted: number
   submittedImages: number
+  progressPct: number
   hasResults: boolean
   createdAt: Date | null
   updatedAt: Date | null
@@ -129,38 +130,17 @@ export const HistoryView = ({}: HistoryViewProps) => {
         header: "Progress",
         cell: ({ row }) => {
           const job = row.original
-          const progress =
-            job.totalImages > 0
-              ? Math.round((job.processedImages / job.totalImages) * 100)
-              : 0
+          const progress = job.progressPct ?? 0
           return (
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground min-w-12">
-                  {job.processedImages} / {job.totalImages}
-                </span>
-                <div className="flex-1 max-w-[120px]">
-                  <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-primary transition-all"
-                      style={{ width: `${progress}%` }}
-                    />
-                  </div>
-                </div>
+            <div className="flex flex-col gap-1 max-w-[160px]">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span className="font-mono">{progress}%</span>
               </div>
-              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                <span>
-                  Batches:{" "}
-                  <span className="font-mono">
-                    {job.batchesCompleted} / {job.totalBatches}
-                  </span>
-                </span>
-                <span>
-                  Submitted:{" "}
-                  <span className="font-mono">
-                    {job.submittedImages} / {job.totalImages}
-                  </span>
-                </span>
+              <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all"
+                  style={{ width: `${progress}%` }}
+                />
               </div>
             </div>
           )

@@ -170,10 +170,18 @@ export const NewJobView = () => {
     downloadSignedUrl(url);
   };
 
+  const totalImagesEffective = useMemo(() => {
+    if (job?.totalImages && job.totalImages > 0) return job.totalImages;
+    if (job?.submittedImages && job.submittedImages > 0) return job.submittedImages;
+    return 0;
+  }, [job?.totalImages, job?.submittedImages]);
+
+  const processedImages = job?.processedImages ?? 0;
+
   const progressPct = useMemo(() => {
-    if (!job?.totalImages || job.totalImages === 0) return 0;
-    return Math.round(((job.processedImages ?? 0) / job.totalImages) * 100);
-  }, [job?.processedImages, job?.totalImages]);
+    if (!totalImagesEffective) return 0;
+    return Math.round((processedImages / totalImagesEffective) * 100);
+  }, [processedImages, totalImagesEffective]);
 
   const formattedUploadProgress = useMemo(() => {
     if (!uploadProgress) return null;
@@ -195,9 +203,9 @@ export const NewJobView = () => {
   }, [job?.batchesCompleted, job?.totalBatches]);
 
   const submittedProgressPct = useMemo(() => {
-    if (!job?.totalImages || job.totalImages === 0) return 0;
-    return Math.round(((job.submittedImages ?? 0) / job.totalImages) * 100);
-  }, [job?.submittedImages, job?.totalImages]);
+    if (!totalImagesEffective) return 0;
+    return Math.round(((job?.submittedImages ?? 0) / totalImagesEffective) * 100);
+  }, [job?.submittedImages, totalImagesEffective]);
 
   return (
     <div className="flex h-full flex-col">
@@ -411,17 +419,17 @@ export const NewJobView = () => {
                   {/* Progreso dinámico según etapa */}
                   <Separator />
                   {job.step === JobStep.PREPROCESSING ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between text-xs">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs">
                         <span className="font-medium text-muted-foreground">
-                          Frames processed
+                          Images processed
                         </span>
-                        <span className="font-mono text-[11px]">
-                          {job.processedImages ?? 0} / {job.totalImages ?? 0}
-                        </span>
-                      </div>
-                      <Progress value={progressPct} />
+                      <span className="font-mono text-[11px]">
+                          {processedImages} / {totalImagesEffective}
+                      </span>
                     </div>
+                    <Progress value={progressPct} />
+                  </div>
                   ) : (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs">
