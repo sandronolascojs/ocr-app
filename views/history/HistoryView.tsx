@@ -76,6 +76,9 @@ type Job = {
   error: string | null
   totalImages: number
   processedImages: number
+  totalBatches: number
+  batchesCompleted: number
+  submittedImages: number
   hasResults: boolean
   createdAt: Date | null
   updatedAt: Date | null
@@ -131,17 +134,33 @@ export const HistoryView = ({}: HistoryViewProps) => {
               ? Math.round((job.processedImages / job.totalImages) * 100)
               : 0
           return (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground min-w-12">
-                {job.processedImages} / {job.totalImages}
-              </span>
-              <div className="flex-1 max-w-[100px]">
-                <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-primary transition-all"
-                    style={{ width: `${progress}%` }}
-                  />
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground min-w-12">
+                  {job.processedImages} / {job.totalImages}
+                </span>
+                <div className="flex-1 max-w-[120px]">
+                  <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primary transition-all"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
                 </div>
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                <span>
+                  Batches:{" "}
+                  <span className="font-mono">
+                    {job.batchesCompleted} / {job.totalBatches}
+                  </span>
+                </span>
+                <span>
+                  Submitted:{" "}
+                  <span className="font-mono">
+                    {job.submittedImages} / {job.totalImages}
+                  </span>
+                </span>
               </div>
             </div>
           )

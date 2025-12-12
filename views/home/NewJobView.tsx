@@ -411,6 +411,20 @@ export const NewJobView = () => {
                       </span>
                     </div>
                     <Progress value={progressPct} />
+                    <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                      <span>
+                        Batches:{" "}
+                        <span className="font-mono">
+                          {job.batchesCompleted ?? 0} / {job.totalBatches ?? 0}
+                        </span>
+                      </span>
+                      <span>
+                        Submitted:{" "}
+                        <span className="font-mono">
+                          {job.submittedImages ?? 0} / {job.totalImages ?? 0}
+                        </span>
+                      </span>
+                    </div>
                   </div>
 
                   {/* Debug / detalles */}

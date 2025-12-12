@@ -1,5 +1,5 @@
 {
-  "id": "b992115f-5cce-4885-b6ad-1365fb2d45c4",
+  "id": "86d42a40-31f3-4654-87d7-6700e380641c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -174,6 +174,27 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "total_batches": {
+          "name": "total_batches",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "batches_completed": {
+          "name": "batches_completed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "submitted_images": {
+          "name": "submitted_images",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "total_images": {
           "name": "total_images",
