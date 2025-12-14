@@ -13,7 +13,7 @@ export default async function NewJobPage({ searchParams }: NewJobPageProps) {
 
   // Prefetch job if jobId is provided
   if (jobId) {
-    await trpc.ocr.getJob.prefetch({ jobId })
+    await trpc.jobs.getJob.prefetch({ jobId })
   }
 
   return (

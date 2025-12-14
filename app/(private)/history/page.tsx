@@ -15,7 +15,7 @@ export default async function HistoryPage({ searchParams }: HistoryPageProps) {
   const limit = pageSize
   const offset = pageIndex * pageSize
 
-  await trpc.ocr.listJobs.prefetch({ limit, offset })
+  await trpc.jobs.listJobs.prefetch({ limit, offset })
 
   return (
     <HydrateClient>
