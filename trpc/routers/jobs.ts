@@ -318,7 +318,12 @@ export const jobsRouter = createTRPCRouter({
         })
       );
 
-      const jobs = jobsWithUrls.map(({ itemType: _, items: __, ...job }) => job);
+      const jobs = jobsWithUrls.map(({ itemType: _itemType, items: _items, ...job }) => {
+        // Destructure to remove unused properties
+        void _itemType;
+        void _items;
+        return job;
+      });
 
       return {
         jobs: jobs.map((job) => ({

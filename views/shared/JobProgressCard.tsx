@@ -11,11 +11,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { JobsStatus, JobStep, JobType } from "@/types";
+import { Badge } from "@/components/ui/badge";
 
 interface JobProgressCardProps {
   jobId: string | null;
@@ -103,9 +103,6 @@ export const JobProgressCard = ({
   isRetrying = false,
   isRetryingFromStep = false,
   isRemovingSubtitles = false,
-  hasTxtResult = false,
-  hasDocxResult = false,
-  hasRawZipResult = false,
   hasCroppedZipResult = false,
 }: JobProgressCardProps) => {
   // Get steps based on job type
@@ -130,7 +127,7 @@ export const JobProgressCard = ({
     if (job.totalImages && job.totalImages > 0) return job.totalImages;
     if (job.submittedImages && job.submittedImages > 0) return job.submittedImages;
     return 0;
-  }, [job?.totalImages, job?.submittedImages]);
+  }, [job]);
 
   const processedImages = job?.processedImages ?? 0;
   const imagesProgressPct = useMemo(() => {
@@ -141,12 +138,12 @@ export const JobProgressCard = ({
   const batchesProgressPct = useMemo(() => {
     if (!job?.totalBatches || job.totalBatches === 0) return 0;
     return Math.round(((job.batchesCompleted ?? 0) / job.totalBatches) * 100);
-  }, [job?.batchesCompleted, job?.totalBatches]);
+  }, [job]);
 
   const submittedProgressPct = useMemo(() => {
     if (!totalImagesEffective) return 0;
     return Math.round(((job?.submittedImages ?? 0) / totalImagesEffective) * 100);
-  }, [job?.submittedImages, totalImagesEffective]);
+  }, [job, totalImagesEffective]);
 
   const isProcessing = job?.status === JobsStatus.PENDING || job?.status === JobsStatus.PROCESSING;
 

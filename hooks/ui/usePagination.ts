@@ -14,7 +14,6 @@ export const usePagination = (
   options?: UsePaginationOptions
 ): PaginationResult => {
   const {
-    key = "page",
     minPageSize = QUERY_CONFIG.PAGINATION.MIN_LIMIT,
     maxPageSize = QUERY_CONFIG.PAGINATION.MAX_LIMIT,
   } = options ?? {};

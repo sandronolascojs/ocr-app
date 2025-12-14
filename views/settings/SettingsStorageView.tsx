@@ -14,9 +14,7 @@ import { formatBytes } from "@/lib/utils"
 import { useDialogStore } from "@/store/dialogs"
 import { useStorageStats } from "@/hooks/http/useStorageStats"
 
-interface SettingsStorageViewProps {}
-
-export const SettingsStorageView = ({}: SettingsStorageViewProps) => {
+export const SettingsStorageView = () => {
   const { setDeleteStorageDialogOpen } = useDialogStore()
   const storageStatsQuery = useStorageStats()
   const storageStats = storageStatsQuery.data
@@ -80,10 +78,26 @@ export const SettingsStorageView = ({}: SettingsStorageViewProps) => {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">
-                      Image ZIPs:
+                      Raw ZIPs:
                     </span>
                     <span className="font-medium">
-                      {formatBytes(storageStats.breakdown.zipBytes)}
+                      {formatBytes(storageStats.breakdown.rawZipBytes)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      Original ZIPs:
+                    </span>
+                    <span className="font-medium">
+                      {formatBytes(storageStats.breakdown.originalZipBytes)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      Cropped ZIPs:
+                    </span>
+                    <span className="font-medium">
+                      {formatBytes(storageStats.breakdown.croppedZipBytes)}
                     </span>
                   </div>
                 </div>

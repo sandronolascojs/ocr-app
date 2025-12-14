@@ -2,9 +2,7 @@
 
 import { JobsTableView } from "@/views/shared/JobsTableView"
 
-interface HistoryViewProps {}
-
-export const HistoryView = ({}: HistoryViewProps) => {
+export const HistoryView = () => {
   return (
     <JobsTableView
       title="Job History"

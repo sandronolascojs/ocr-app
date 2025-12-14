@@ -35,9 +35,8 @@ import { Download, Search, X, Image as ImageIcon } from "lucide-react"
 import { QUERY_CONFIG } from "@/constants/query.constants"
 import { Document } from "@/types"
 
-interface DocumentsViewProps {}
 
-export const DocumentsView = ({}: DocumentsViewProps) => {
+export const DocumentsView = () => {
   const pagination = usePagination()
   const utils = trpc.useUtils()
 

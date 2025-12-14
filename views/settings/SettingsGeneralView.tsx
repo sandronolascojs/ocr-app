@@ -4,16 +4,13 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
 
-interface SettingsGeneralViewProps {}
-
-export const SettingsGeneralView = async ({}: SettingsGeneralViewProps) => {
+export const SettingsGeneralView = async () => {
   const session = await auth.api.getSession({
     headers: await headers(),
   })

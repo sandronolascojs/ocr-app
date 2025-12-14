@@ -3,9 +3,7 @@
 import { JobsTableView } from "@/views/shared/JobsTableView"
 import { JobType } from "@/types"
 
-interface OcrJobsViewProps {}
-
-export const OcrJobsView = ({}: OcrJobsViewProps) => {
+export const OcrJobsView = () => {
   return (
     <JobsTableView
       title="OCR Jobs"

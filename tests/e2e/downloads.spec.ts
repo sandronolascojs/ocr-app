@@ -1,5 +1,4 @@
 import { test, expect } from "@playwright/test";
-import JSZip from "jszip";
 import {
   getOrCreateSharedTestUser,
   signInSharedTestUser,

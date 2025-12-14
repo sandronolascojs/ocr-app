@@ -3,9 +3,7 @@
 import { JobsTableView } from "@/views/shared/JobsTableView"
 import { JobType } from "@/types"
 
-interface SubtitleRemovalJobsViewProps {}
-
-export const SubtitleRemovalJobsView = ({}: SubtitleRemovalJobsViewProps) => {
+export const SubtitleRemovalJobsView = () => {
   return (
     <JobsTableView
       title="Subtitle Removal Jobs"

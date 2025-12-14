@@ -9,7 +9,7 @@ import { InngestEvents, JobsStatus, JobStep, JobType } from "@/types";
 import { JobItemType } from "@/types/enums/jobs/jobItemType.enum";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 export const subtitlesRouter = createTRPCRouter({
   removeSubtitles: protectedProcedure

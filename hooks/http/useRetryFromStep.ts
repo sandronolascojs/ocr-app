@@ -19,8 +19,8 @@ export const useRetryFromStep = (options?: UseRetryFromStepOptions) => {
 
   return trpc.ocr.retryFromStep.useMutation({
     onSuccess: (data, variables) => {
-      utils.ocr.getJob.invalidate({ jobId: data.jobId })
-      utils.ocr.listJobs.invalidate()
+      utils.jobs.getJob.invalidate({ jobId: data.jobId })
+      utils.jobs.listJobs.invalidate()
       
       const stepMessage = variables.step ? (stepLabel[variables.step] ?? "the specified step") : "the specified step"
       

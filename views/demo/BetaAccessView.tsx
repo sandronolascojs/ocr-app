@@ -12,9 +12,7 @@ import { Lock, Mail, AlertCircle, Sparkles, LogOut } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { signOut } from "@/lib/auth/client"
 
-interface BetaAccessViewProps {}
-
-export const BetaAccessView = ({}: BetaAccessViewProps) => {
+export const BetaAccessView = () => {
   const router = useRouter()
 
   const handleLogout = async () => {
@@ -50,7 +48,7 @@ export const BetaAccessView = ({}: BetaAccessViewProps) => {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              We're currently in beta and access is limited. To use this
+              We&apos;re currently in beta and access is limited. To use this
               application, you need to request access from an administrator.
             </p>
             <div className="rounded-lg border bg-muted/50 p-4">
@@ -75,15 +73,15 @@ export const BetaAccessView = ({}: BetaAccessViewProps) => {
           <CardHeader>
             <div className="flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-muted-foreground" />
-              <CardTitle>What's Next?</CardTitle>
+              <CardTitle>What&apos;s Next?</CardTitle>
             </div>
             <CardDescription>
-              Once your account is enabled, you'll have full access
+              Once your account is enabled, you&apos;ll have full access
             </CardDescription>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              After your administrator enables your account, you'll be able to
+              After your administrator enables your account, you&apos;ll be able to
               access all features of the application, including creating OCR
               jobs, viewing documents, and managing your storage.
             </p>

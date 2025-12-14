@@ -7,8 +7,7 @@ import { ApiKeyProvider } from "@/types/enums/apiKeyProvider.enum";
  * that the user has an active API key configured.
  */
 export async function setupApiKeyMocking(
-  context: BrowserContext,
-  page: Page
+  context: BrowserContext
 ): Promise<boolean> {
   const openaiApiKey = process.env.E2E_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
 

@@ -13,7 +13,7 @@ import {
   getUserRootKey,
   type SignedDownloadUrl,
 } from "@/lib/storage";
-import { InngestEvents, JobsStatus, JobStep, JobType, ApiKeyProvider, Document } from "@/types";
+import { InngestEvents, JobsStatus, JobStep, JobType, Document } from "@/types";
 import { JobItemType } from "@/types/enums/jobs/jobItemType.enum";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";

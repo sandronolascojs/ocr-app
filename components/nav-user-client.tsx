@@ -65,7 +65,7 @@ export const NavUserClient = ({ user }: NavUserClientProps) => {
           });
         },
       });
-    } catch (error) {
+    } catch {
       // Error already handled by onError callback
     }
   };

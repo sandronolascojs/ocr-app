@@ -19,17 +19,13 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { ApiKeyAlert } from "@/components/api-key-alert";
 import { toast } from "sonner";
 import { JobsStatus, JobStep, JobType } from "@/types";
@@ -44,30 +40,6 @@ const uploadSchema = z.object({
 });
 
 type UploadFormValues = z.infer<typeof uploadSchema>;
-
-// ---------- Helpers UI ----------
-
-const statusLabel: Record<JobsStatus, string> = {
-  [JobsStatus.PENDING]: "Pending",
-  [JobsStatus.PROCESSING]: "Processing",
-  [JobsStatus.DONE]: "Done",
-  [JobsStatus.ERROR]: "Error",
-};
-
-const stepLabel: Record<JobStep, string> = {
-  [JobStep.PREPROCESSING]: "1) Preprocessing",
-  [JobStep.BATCH_SUBMITTED]: "2) Batch submitted",
-  [JobStep.RESULTS_SAVED]: "3) Results saved",
-  [JobStep.DOCS_BUILT]: "4) Documents built",
-};
-
-const statusVariant: Record<JobsStatus, React.ComponentProps<typeof Badge>["variant"]> =
-  {
-    [JobsStatus.PENDING]: "secondary",
-    [JobsStatus.PROCESSING]: "default",
-    [JobsStatus.DONE]: "default",
-    [JobsStatus.ERROR]: "destructive",
-  };
 
 // ---------- Página principal ----------
 
@@ -196,7 +168,7 @@ export const NewJobView = () => {
   const formattedFileSize = useMemo(() => {
     if (!selectedFile) return null;
     return formatBytes(selectedFile.size);
-  }, [selectedFile?.size]);
+  }, [selectedFile]);
 
   return (
     <div className="flex h-full flex-col">

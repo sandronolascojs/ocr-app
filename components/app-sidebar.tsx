@@ -2,15 +2,12 @@
 
 import {
   FileText,
-  History,
   Settings2,
   Image,
-  FolderOpen,
   Scan,
   Home,
 } from "lucide-react"
 import { NavMain } from "@/components/nav-main"
-import { NavProjects } from "@/components/nav-projects"
 import { TeamSwitcher } from "@/components/team-switcher"
 import {
   Sidebar,

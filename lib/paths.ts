@@ -59,7 +59,7 @@ function validateAndEnsureDirectory(dirPath: string): string {
     // Attempt to write test file - if this fails, directory is not writable
     try {
       fs.writeFileSync(testFile, "test");
-    } catch (error) {
+    } catch {
       throw new Error(
         `Directory is not writable: ${absolutePath}. Please check permissions.`,
       );
@@ -240,7 +240,7 @@ export const VOLUME_DIRS = new Proxy({} as VolumeDirs, {
     const dirs = getVolumeDirs();
     return dirs[prop as keyof VolumeDirs];
   },
-  ownKeys(_target) {
+  ownKeys() {
     const dirs = getVolumeDirs();
     return Reflect.ownKeys(dirs);
   },

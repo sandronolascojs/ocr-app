@@ -55,7 +55,7 @@ const loginViaUI = async (
     // First try by label (most reliable)
     await page.getByLabel(/Email/i).waitFor({ state: "visible", timeout: 10_000 });
     await page.getByLabel(/Password/i).waitFor({ state: "visible", timeout: 10_000 });
-  } catch (error) {
+  } catch {
     // Fallback to input selectors
     await page.waitForSelector('input[type="email"]', { state: "visible", timeout: 10_000 });
     await page.waitForSelector('input[type="password"]', { state: "visible", timeout: 10_000 });
@@ -79,7 +79,7 @@ const loginViaUI = async (
     // Wait for page to be fully loaded
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
     return true;
-  } catch (error) {
+  } catch {
     // Check if we're on an authenticated page (login might have succeeded but redirect is slow)
     await page.waitForTimeout(2000); // Give it a moment
     const finalUrl = page.url();

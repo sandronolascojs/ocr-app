@@ -1,28 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { useState, useEffect } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { useApiKeys } from "@/hooks/http";
 import { ApiKeyProvider } from "@/types/enums/apiKeyProvider.enum";
 
-interface ApiKeyAlertProps {}
-
-export const ApiKeyAlert = ({}: ApiKeyAlertProps) => {
-  const [mounted, setMounted] = useState(false);
+export const ApiKeyAlert = () => {
   const apiKeysQuery = useApiKeys();
-
-  // Only render after hydration to prevent mismatch between server and client
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  // Don't render anything during SSR or before hydration
-  if (!mounted) {
-    return null;
-  }
 
   const apiKeys = apiKeysQuery.data ?? [];
   const hasOpenAiKey = apiKeys.some(

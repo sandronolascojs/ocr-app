@@ -10,7 +10,6 @@ import {
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
-import { JobsStatus } from "@/types"
 import { formatBytes } from "@/lib/utils"
 import Link from "next/link"
 import {
@@ -24,9 +23,7 @@ import {
 } from "lucide-react"
 import { useDashboardMetrics } from "@/hooks/http"
 
-interface HomeViewProps {}
-
-export const HomeView = ({}: HomeViewProps) => {
+export const HomeView = () => {
   const metricsQuery = useDashboardMetrics()
 
   const metrics = metricsQuery.data

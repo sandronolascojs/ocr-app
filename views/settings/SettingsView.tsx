@@ -1,6 +1,5 @@
 "use client"
 
-import { useState, useEffect } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import {
   Card,
@@ -19,23 +18,13 @@ import { ApiKeysView } from "./ApiKeysView"
 import { useDialogStore } from "@/store/dialogs"
 import { useStorageStats } from "@/hooks/http/useStorageStats"
 
-interface SettingsViewProps {}
-
-export const SettingsView = ({}: SettingsViewProps) => {
+export const SettingsView = () => {
   const searchParams = useSearchParams()
   const router = useRouter()
   const { setDeleteStorageDialogOpen } = useDialogStore()
-  const [activeTab, setActiveTab] = useState(
-    searchParams.get("tab") ?? "general"
-  )
-
-  useEffect(() => {
-    const tab = searchParams.get("tab") ?? "general"
-    setActiveTab(tab)
-  }, [searchParams])
+  const activeTab = searchParams.get("tab") ?? "general"
 
   const handleTabChange = (value: string) => {
-    setActiveTab(value)
     const params = new URLSearchParams(searchParams.toString())
     if (value === "general") {
       params.delete("tab")
@@ -170,10 +159,26 @@ export const SettingsView = ({}: SettingsViewProps) => {
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">
-                          Image ZIPs:
+                          Raw ZIPs:
                         </span>
                         <span className="font-medium">
-                          {formatBytes(storageStats.breakdown.zipBytes)}
+                          {formatBytes(storageStats.breakdown.rawZipBytes)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Original ZIPs:
+                        </span>
+                        <span className="font-medium">
+                          {formatBytes(storageStats.breakdown.originalZipBytes)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Cropped ZIPs:
+                        </span>
+                        <span className="font-medium">
+                          {formatBytes(storageStats.breakdown.croppedZipBytes)}
                         </span>
                       </div>
                     </div>

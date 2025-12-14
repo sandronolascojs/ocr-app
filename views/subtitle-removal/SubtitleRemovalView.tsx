@@ -20,12 +20,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { JobsStatus, JobType } from "@/types";
 import { downloadSignedUrl, formatBytes } from "@/lib/utils";
-import { trpc } from "@/trpc/client";
 import { JobProgressCard } from "@/views/shared/JobProgressCard";
 import { useOcrJob } from "@/hooks/http/useOcrJob";
 
@@ -40,20 +38,6 @@ type UploadFormValues = z.infer<typeof uploadSchema>;
 
 // ---------- Helpers UI ----------
 
-const statusLabel: Record<JobsStatus, string> = {
-  [JobsStatus.PENDING]: "Pending",
-  [JobsStatus.PROCESSING]: "Processing",
-  [JobsStatus.DONE]: "Done",
-  [JobsStatus.ERROR]: "Error",
-};
-
-const statusVariant: Record<JobsStatus, React.ComponentProps<typeof Badge>["variant"]> =
-  {
-    PENDING: "secondary",
-    PROCESSING: "default",
-    DONE: "default",
-    ERROR: "destructive",
-  };
 
 // ---------- Página principal ----------
 
@@ -77,7 +61,6 @@ export const SubtitleRemovalView = () => {
   const {
     handleSubmit,
     setValue,
-    resetField,
     formState: { errors },
     watch,
   } = form;
@@ -87,7 +70,6 @@ export const SubtitleRemovalView = () => {
   // Mutations / queries
   const uploadMutation = useUploadZip();
   const removeSubtitlesMutation = useRemoveSubtitles();
-  const utils = trpc.useUtils();
 
   // Get current job if jobId is set (using the same hook as OCR jobs for consistency)
   const jobQuery = useOcrJob(currentJobId);

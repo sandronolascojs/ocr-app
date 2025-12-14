@@ -20,8 +20,8 @@ export const useRetryOcrJob = (options?: UseRetryOcrJobOptions) => {
   
   const clientMutation = trpc.ocr.retryJob.useMutation({
     onSuccess: (data) => {
-      utils.ocr.getJob.invalidate({ jobId: data.jobId })
-      utils.ocr.listJobs.invalidate()
+      utils.jobs.getJob.invalidate({ jobId: data.jobId })
+      utils.jobs.listJobs.invalidate()
       
       const stepMessage = options?.currentStep
         ? stepLabel[options.currentStep]

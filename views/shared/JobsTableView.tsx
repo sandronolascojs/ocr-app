@@ -112,7 +112,6 @@ export const JobsTableView = ({
   showJobTypeFilter = true,
   onJobClick,
 }: JobsTableViewProps) => {
-  const router = useRouter()
   const pagination = usePagination()
   const utils = trpc.useUtils()
   const [jobTypeFilter, setJobTypeFilter] = React.useState<JobType | "all">(

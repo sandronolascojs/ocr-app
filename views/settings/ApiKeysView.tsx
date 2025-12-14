@@ -17,9 +17,7 @@ import { ApiKeyProvider } from "@/types/enums/apiKeyProvider.enum"
 import { useDialogStore } from "@/store/dialogs"
 import { useApiKeys } from "@/hooks/http"
 
-interface ApiKeysViewProps {}
-
-export const ApiKeysView = ({}: ApiKeysViewProps) => {
+export const ApiKeysView = () => {
   const { setAddApiKeyDialogOpen, setDeleteApiKeyDialogOpen } = useDialogStore()
   const apiKeysQuery = useApiKeys()
 
@@ -27,8 +25,6 @@ export const ApiKeysView = ({}: ApiKeysViewProps) => {
   const openaiKeys = apiKeys.filter(
     (key) => key.provider === ApiKeyProvider.OPENAI
   )
-  const activeKey = openaiKeys.find((key) => key.isActive)
-
   return (
     <div className="space-y-6">
       <div>

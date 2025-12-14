@@ -1,7 +1,6 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { cache } from 'react';
 import superjson from 'superjson';
-import { z } from 'zod';
 import { getServerUser } from '@/server/auth/getServerUser';
 import { db, type DB } from '@/db';
 

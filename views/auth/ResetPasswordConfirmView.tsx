@@ -42,7 +42,6 @@ export const ResetPasswordConfirmView = () => {
     register,
     handleSubmit,
     control,
-    getValues,
     watch,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({

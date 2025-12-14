@@ -71,7 +71,7 @@ export const encryptApiKey = async (
 
     // No salt prefix; output is directly the JWE string
     return jwe
-  } catch (error) {
+  } catch {
     console.error("Encryption failed: An error occurred during the encryption process")
     throw new Error("Encryption failed")
   }

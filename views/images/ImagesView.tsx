@@ -26,9 +26,8 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination"
 
-interface ImagesViewProps {}
 
-export const ImagesView = ({}: ImagesViewProps) => {
+export const ImagesView = () => {
   const pagination = usePagination()
   const utils = trpc.useUtils()
 

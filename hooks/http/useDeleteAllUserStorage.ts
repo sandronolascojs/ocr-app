@@ -16,7 +16,7 @@ export const useDeleteAllUserStorage = (
       utils.ocr.getStorageStats.invalidate()
       utils.ocr.listDocuments.invalidate()
       utils.ocr.getAllImages.invalidate()
-      utils.ocr.listJobs.invalidate()
+      utils.jobs.listJobs.invalidate()
       toast.success("Storage deleted", {
         description: "All your files have been deleted successfully.",
       })

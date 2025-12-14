@@ -28,14 +28,13 @@ interface TeamSwitcherProps {
 
 export const TeamSwitcher = ({ teams }: TeamSwitcherProps) => {
   const { isMobile } = useSidebar()
+  const [activeTeam, setActiveTeam] = React.useState<TeamSwitcherProps['teams'][0] | null>(
+    teams.length > 0 ? teams[0] : null
+  )
   
   if (teams.length === 0) {
     return null
   }
-
-  const [activeTeam, setActiveTeam] = React.useState<TeamSwitcherProps['teams'][0] | null>(
-    teams.length > 0 ? teams[0] : null
-  )
 
   if (!activeTeam) {
     return null
