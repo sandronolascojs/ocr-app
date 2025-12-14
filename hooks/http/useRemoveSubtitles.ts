@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 interface UseRemoveSubtitlesOptions {
   onError?: (error: Error) => void;
+  onSuccess?: (data: { jobId: string; parentJobId: string | null }) => void;
 }
 
 export const useRemoveSubtitles = (options?: UseRemoveSubtitlesOptions) => {
@@ -26,6 +27,8 @@ export const useRemoveSubtitles = (options?: UseRemoveSubtitlesOptions) => {
       toast.success("Remove subtitles started", {
         description: "The cropped ZIP will be available shortly.",
       });
+
+      options?.onSuccess?.(data);
     },
     onError: (error) => {
       const errorMessage =

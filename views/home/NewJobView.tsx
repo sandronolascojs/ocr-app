@@ -13,7 +13,7 @@ import { useRetryFromStep } from "@/hooks/http/useRetryFromStep";
 import { useOcrResult } from "@/hooks/http/useOcrResult";
 import { useApiKeys, useRemoveSubtitles } from "@/hooks/http";
 import { ApiKeyProvider } from "@/types/enums/apiKeyProvider.enum";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 
 import {
   Card,
@@ -88,7 +88,13 @@ export const NewJobView = () => {
     currentStep: job?.step ?? null,
   });
   const retryFromStepMutation = useRetryFromStep();
-  const removeSubtitlesMutation = useRemoveSubtitles();
+  const router = useRouter();
+  const removeSubtitlesMutation = useRemoveSubtitles({
+    onSuccess: (data) => {
+      // Redirect to subtitle removal view with the new job ID
+      router.push(`/subtitle-removal?jobId=${data.jobId}`);
+    },
+  });
 
   const resultQuery = useOcrResult(
     currentJobId,
