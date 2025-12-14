@@ -291,7 +291,14 @@ export const NewJobView = () => {
             canDownloadDocx={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.docx}
             canDownloadRawZip={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.rawZip}
             canDownloadCroppedZip={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.croppedZip}
-            canRemoveSubtitles={hasOpenAiKey && !!currentJobId}
+            canRemoveSubtitles={
+              hasOpenAiKey && 
+              !!currentJobId && 
+              !!job && 
+              job.status === JobsStatus.DONE && 
+              !!job.hasResults && 
+              !resultQuery.ocrResult?.croppedZip
+            }
             isRetrying={retryMutation.isLoading}
             isRetryingFromStep={retryFromStepMutation.isPending}
             isRemovingSubtitles={removeSubtitlesMutation.isPending}

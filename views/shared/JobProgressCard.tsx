@@ -426,7 +426,11 @@ export const JobProgressCard = ({
             </Button>
           )}
 
-          {onRemoveSubtitles && job?.status === JobsStatus.DONE && !hasCroppedZipResult && (
+          {onRemoveSubtitles && 
+           job?.jobType === JobType.OCR && 
+           job?.status === JobsStatus.DONE && 
+           job?.hasResults && 
+           !hasCroppedZipResult && (
             <Button
               type="button"
               size="sm"
@@ -436,7 +440,7 @@ export const JobProgressCard = ({
             >
               {isRemovingSubtitles
                 ? "Processing..."
-                : "Remove Subtitles"}
+                : "Generate Cropped ZIP"}
             </Button>
           )}
         </div>

@@ -10,8 +10,17 @@ export const useRemoveSubtitles = (options?: UseRemoveSubtitlesOptions) => {
 
   return trpc.subtitles.removeSubtitles.useMutation({
     onSuccess: (data) => {
+      // Invalidate the new subtitle removal job
       utils.ocr.getResult.invalidate({ jobId: data.jobId });
       utils.jobs.getJobItems.invalidate({ jobId: data.jobId });
+      utils.jobs.getJob.invalidate({ jobId: data.jobId });
+      
+      // If there's a parent job, invalidate it too to update hasCroppedZip
+      if (data.parentJobId) {
+        utils.jobs.getJob.invalidate({ jobId: data.parentJobId });
+        utils.ocr.getResult.invalidate({ jobId: data.parentJobId });
+      }
+      
       utils.jobs.listJobs.invalidate();
 
       toast.success("Remove subtitles started", {
