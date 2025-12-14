@@ -22,6 +22,8 @@ export const PrivateHeader = () => {
     switch (segment) {
       case "new-job":
         return "New Job"
+      case "subtitle-removal":
+        return "Subtitle Removal"
       case "history":
         return "History"
       case "documents":
