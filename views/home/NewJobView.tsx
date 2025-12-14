@@ -288,9 +288,13 @@ export const NewJobView = () => {
             onDownloadDocx={handleDownloadDocx}
             onDownloadRawZip={handleDownloadRawZip}
             onDownloadCroppedZip={handleDownloadCroppedZip}
-            onRemoveSubtitles={() => {
+            onRemoveSubtitles={async () => {
               if (!currentJobId) return;
-              removeSubtitlesMutation.mutate({ jobId: currentJobId });
+              try {
+                await removeSubtitlesMutation.mutateAsync({ jobId: currentJobId });
+              } catch (error) {
+                console.error("Failed to start remove subtitles:", error);
+              }
             }}
             canRetry={hasOpenAiKey && !!currentJobId && !isProcessing}
             canDownloadTxt={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.txt}

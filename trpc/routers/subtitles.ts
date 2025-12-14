@@ -115,14 +115,16 @@ export const subtitlesRouter = createTRPCRouter({
       // - DONE (when complete)
       // It should NEVER set the step to DOCS_BUILT, BATCH_SUBMITTED, or RESULTS_SAVED
       // as these steps are only valid for OCR jobs.
+      const eventData = {
+        jobId: newJobId,
+        parentJobId,
+        zipKey,
+        userId: ctx.userId,
+      };
+      
       await inngest.send({
         name: InngestEvents.REMOVE_SUBTITLES,
-        data: {
-          jobId: newJobId,
-          parentJobId,
-          zipKey,
-          userId: ctx.userId,
-        },
+        data: eventData,
       });
 
       return {
