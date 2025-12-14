@@ -31,7 +31,15 @@ import {
 } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn, formatBytes, downloadSignedUrl } from "@/lib/utils"
-import { Download, Search, X, Image as ImageIcon } from "lucide-react"
+import { Download, Search, X, Image as ImageIcon, MoreHorizontal, Eye } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { QUERY_CONFIG } from "@/constants/query.constants"
 import { Document } from "@/types"
 
@@ -447,34 +455,51 @@ const DocumentActions = ({ document }: DocumentActionsProps) => {
     downloadSignedUrl(document.docx.url.url)
   }
 
+  const hasAnyDocument = document.txt?.filesExist || document.docx?.filesExist
+
   return (
-    <div className="flex gap-2">
-      {document.txt && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleDownloadTxt}
-          disabled={!document.txt.filesExist || !document.txt.url}
-          className="h-8 w-8 p-0"
-          title="Download TXT"
-        >
-          <Download className="h-4 w-4" />
-          <span className="sr-only">Download TXT</span>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" className="h-8 w-8 p-0">
+          <span className="sr-only">Open menu</span>
+          <MoreHorizontal className="h-4 w-4" />
         </Button>
-      )}
-      {document.docx && (
-    <Button
-      variant="ghost"
-      size="sm"
-          onClick={handleDownloadDocx}
-          disabled={!document.docx.filesExist || !document.docx.url}
-      className="h-8 w-8 p-0"
-          title="Download DOCX"
-    >
-      <Download className="h-4 w-4" />
-          <span className="sr-only">Download DOCX</span>
-    </Button>
-      )}
-    </div>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {hasAnyDocument && (
+          <>
+            {document.txt?.filesExist && document.txt?.url && (
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault()
+                  handleDownloadTxt()
+                }}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download TXT
+              </DropdownMenuItem>
+            )}
+            {document.docx?.filesExist && document.docx?.url && (
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault()
+                  handleDownloadDocx()
+                }}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download DOCX
+              </DropdownMenuItem>
+            )}
+          </>
+        )}
+        {!hasAnyDocument && (
+          <DropdownMenuItem disabled>
+            No documents available
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
