@@ -1,23 +1,26 @@
 import { QUERY_CONFIG } from "@/constants/query.constants";
 import { trpc } from "@/trpc/client";
+import { JobType } from "@/types";
 
-type UseOcrJobsOptions = {
+type UseJobsOptions = {
   limit?: number;
   offset?: number;
+  type?: JobType | "all";
   enabled?: boolean;
   refetchIntervalMs?: number;
 };
 
-export const useOcrJobs = (options?: UseOcrJobsOptions) => {
+export const useJobs = (options?: UseJobsOptions) => {
   const {
     limit = QUERY_CONFIG.DEFAULT_PAGINATION.limit,
     offset = QUERY_CONFIG.DEFAULT_PAGINATION.offset,
+    type = QUERY_CONFIG.JOBS.DEFAULT_TYPE,
     enabled = true,
     refetchIntervalMs = QUERY_CONFIG.REFRESH_INTERVAL_MS,
   } = options ?? {};
 
-  const query = trpc.ocr.listJobs.useQuery(
-    { limit, offset },
+  const query = trpc.jobs.listJobs.useQuery(
+    { limit, offset, type },
     {
       enabled,
       refetchInterval: enabled ? refetchIntervalMs : false,

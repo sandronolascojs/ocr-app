@@ -2,8 +2,11 @@ import { useMutation } from "@tanstack/react-query";
 import { trpc } from "@/trpc/client";
 import { useState, useCallback } from "react";
 
+import { JobType } from "@/types";
+
 type UploadArgs = {
   file: File;
+  jobType: JobType;
 };
 
 type SignedUploadPayload = {
@@ -18,10 +21,10 @@ type UploadProgress = {
   percentage: number;
 };
 
-export const useUploadOcrZip = () => {
+export const useUploadZip = () => {
   const utils = trpc.useUtils();
   const prepareUpload = trpc.ocr.uploadZip.useMutation();
-  const confirmUpload = trpc.ocr.confirmUpload.useMutation();
+  const confirmUpload = trpc.jobs.confirmUpload.useMutation();
   const abortUpload = trpc.ocr.abortUpload.useMutation();
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(
     null
@@ -30,6 +33,7 @@ export const useUploadOcrZip = () => {
   const mutation = useMutation({
     mutationFn: async ({
       file,
+      jobType,
       onProgress,
     }: UploadArgs & { onProgress?: (progress: UploadProgress) => void }) => {
       const prepareResponse = await prepareUpload.mutateAsync({
@@ -44,7 +48,10 @@ export const useUploadOcrZip = () => {
         await uploadViaSignedUrl(file, prepareResponse.upload, onProgress);
         uploadSucceeded = true;
 
-        await confirmUpload.mutateAsync({ jobId: prepareResponse.jobId });
+        await confirmUpload.mutateAsync({ 
+          jobId: prepareResponse.jobId,
+          jobType,
+        });
 
         return { jobId: prepareResponse.jobId };
       } catch (error) {
@@ -73,7 +80,7 @@ export const useUploadOcrZip = () => {
       }
     },
     onSuccess: () => {
-      utils.ocr.listJobs.invalidate();
+      utils.jobs.listJobs.invalidate();
       // Reset progress after successful upload
       setTimeout(() => {
         setUploadProgress(null);
@@ -124,7 +131,7 @@ const uploadViaSignedUrl = async (
           loaded,
           total,
           percentage,
-        });
+  });
       }
     });
 

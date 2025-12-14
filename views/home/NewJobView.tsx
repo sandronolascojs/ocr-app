@@ -6,12 +6,12 @@ import { useForm } from "react-hook-form";
 import { z } from "zod/v3";
 import { zodResolver } from "@hookform/resolvers/zod";
 
-import { useUploadOcrZip } from "@/hooks/http/useUploadZip";
+import { useUploadZip } from "@/hooks/http/useUploadZip";
 import { useOcrJob } from "@/hooks/http/useOcrJob";
 import { useRetryOcrJob } from "@/hooks/http/useRetryOcrJob";
 import { useRetryFromStep } from "@/hooks/http/useRetryFromStep";
 import { useOcrResult } from "@/hooks/http/useOcrResult";
-import { useApiKeys } from "@/hooks/http";
+import { useApiKeys, useRemoveSubtitles } from "@/hooks/http";
 import { ApiKeyProvider } from "@/types/enums/apiKeyProvider.enum";
 import { useSearchParams } from "next/navigation";
 
@@ -32,8 +32,9 @@ import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ApiKeyAlert } from "@/components/api-key-alert";
 import { toast } from "sonner";
-import { JobsStatus, JobStep } from "@/types";
+import { JobsStatus, JobStep, JobType } from "@/types";
 import { downloadSignedUrl, formatBytes } from "@/lib/utils";
+import { JobProgressCard } from "@/views/shared/JobProgressCard";
 
 // ---------- Zod schema para el form de upload ----------
 
@@ -62,10 +63,10 @@ const stepLabel: Record<JobStep, string> = {
 
 const statusVariant: Record<JobsStatus, React.ComponentProps<typeof Badge>["variant"]> =
   {
-    PENDING: "secondary",
-    PROCESSING: "default",
-    DONE: "default",
-    ERROR: "destructive",
+    [JobsStatus.PENDING]: "secondary",
+    [JobsStatus.PROCESSING]: "default",
+    [JobsStatus.DONE]: "default",
+    [JobsStatus.ERROR]: "destructive",
   };
 
 // ---------- Página principal ----------
@@ -98,7 +99,7 @@ export const NewJobView = () => {
   const selectedFile: File | undefined = watch("file");
 
   // Mutations / queries
-  const uploadMutation = useUploadOcrZip();
+  const uploadMutation = useUploadZip();
   const uploadProgress = uploadMutation.uploadProgress;
   const jobQuery = useOcrJob(currentJobId);
   const apiKeysQuery = useApiKeys();
@@ -115,6 +116,7 @@ export const NewJobView = () => {
     currentStep: job?.step ?? null,
   });
   const retryFromStepMutation = useRetryFromStep();
+  const removeSubtitlesMutation = useRemoveSubtitles();
 
   const resultQuery = useOcrResult(
     currentJobId,
@@ -128,7 +130,10 @@ export const NewJobView = () => {
 
   const onSubmit = handleSubmit(async (values: UploadFormValues) => {
     try {
-      const { jobId } = await uploadMutation.mutateAsync({ file: values.file });
+      const { jobId } = await uploadMutation.mutateAsync({ 
+        file: values.file,
+        jobType: JobType.OCR,
+      });
       setCurrentJobId(jobId);
       toast.success("Job created", {
         description: `Job ID: ${jobId}`,
@@ -170,18 +175,14 @@ export const NewJobView = () => {
     downloadSignedUrl(url);
   };
 
-  const totalImagesEffective = useMemo(() => {
-    if (job?.totalImages && job.totalImages > 0) return job.totalImages;
-    if (job?.submittedImages && job.submittedImages > 0) return job.submittedImages;
-    return 0;
-  }, [job?.totalImages, job?.submittedImages]);
+  const handleDownloadCroppedZip = () => {
+    const url = resultQuery.ocrResult?.croppedZip?.url;
+    if (!url) return;
+    downloadSignedUrl(url);
+  };
 
-  const processedImages = job?.processedImages ?? 0;
-
-  const progressPct = useMemo(() => {
-    if (!totalImagesEffective) return 0;
-    return Math.round((processedImages / totalImagesEffective) * 100);
-  }, [processedImages, totalImagesEffective]);
+  // Progress percentage comes from backend
+  const progressPct = job?.progressPct ?? 0;
 
   const formattedUploadProgress = useMemo(() => {
     if (!uploadProgress) return null;
@@ -196,16 +197,6 @@ export const NewJobView = () => {
     if (!selectedFile) return null;
     return formatBytes(selectedFile.size);
   }, [selectedFile?.size]);
-
-  const batchesProgressPct = useMemo(() => {
-    if (!job?.totalBatches || job.totalBatches === 0) return 0;
-    return Math.round(((job.batchesCompleted ?? 0) / job.totalBatches) * 100);
-  }, [job?.batchesCompleted, job?.totalBatches]);
-
-  const submittedProgressPct = useMemo(() => {
-    if (!totalImagesEffective) return 0;
-    return Math.round(((job?.submittedImages ?? 0) / totalImagesEffective) * 100);
-  }, [job?.submittedImages, totalImagesEffective]);
 
   return (
     <div className="flex h-full flex-col">
@@ -294,297 +285,49 @@ export const NewJobView = () => {
           </Card>
 
           {/* Job Status Card */}
-          <Card className="flex flex-col">
-            <CardHeader className="flex flex-row items-start justify-between gap-2">
-              <div className="space-y-1">
-                <CardTitle>Job status</CardTitle>
-                <CardDescription className="break-all">
-                  {currentJobId ? (
-                    <>
-                      Job ID:{" "}
-                      <span className="font-mono text-xs">
-                        {currentJobId}
-                      </span>
-                    </>
-                  ) : (
-                    "Upload a ZIP to start a new job."
-                  )}
-                </CardDescription>
-              </div>
-              {job?.status && (
-                <Badge variant={statusVariant[job.status]}>
-                  {statusLabel[job.status]}
-                </Badge>
-              )}
-            </CardHeader>
-
-            <CardContent className="flex-1 flex flex-col gap-4">
-              {jobQuery.isLoading && !job && currentJobId && (
-                <p className="text-sm text-muted-foreground">
-                  Loading job info...
-                </p>
-              )}
-
-              {!currentJobId && (
-                <p className="text-sm text-muted-foreground">
-                  No job selected. Upload a ZIP to start a new job or go to History to load an existing job.
-                </p>
-              )}
-
-              {job && (
-                <>
-                  {/* Steps timeline */}
-                  <div className="space-y-3">
-                    <p className="text-xs font-medium uppercase text-muted-foreground">
-                      Pipeline steps
-                    </p>
-                    <div className="space-y-2">
-                      {(
-                        [
-                          JobStep.PREPROCESSING,
-                          JobStep.BATCH_SUBMITTED,
-                          JobStep.RESULTS_SAVED,
-                          JobStep.DOCS_BUILT,
-                        ] as JobStep[]
-                      ).map((s) => {
-                        const isActive = job.step === s;
-                        const isCompleted =
-                          (job.step === JobStep.BATCH_SUBMITTED && s === JobStep.PREPROCESSING) ||
-                          (job.step === JobStep.RESULTS_SAVED &&
-                            (s === JobStep.PREPROCESSING ||
-                              s === JobStep.BATCH_SUBMITTED)) ||
-                          (job.step === JobStep.DOCS_BUILT &&
-                            (s === JobStep.PREPROCESSING ||
-                              s === JobStep.BATCH_SUBMITTED ||
-                              s === JobStep.RESULTS_SAVED)) ||
-                          job.status === JobsStatus.DONE;
-                        const isFailed = job.status === JobsStatus.ERROR;
-                        const canRetryFromStep = isFailed && !isCompleted;
-                        return (
-                          <div
-                            key={s}
-                            className="flex items-center justify-between rounded-md border px-3 py-2 text-xs"
-                          >
-                            <div className="flex items-center gap-2">
-                              <div
-                                className={`h-2 w-2 rounded-full ${
-                                  isCompleted
-                                    ? "bg-emerald-500"
-                                    : isActive
-                                    ? "bg-primary"
-                                    : "bg-muted-foreground/40"
-                                }`}
-                              />
-                              <span className="font-medium">
-                                {stepLabel[s]}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {isCompleted && (
-                                <Badge variant="outline" className="text-[10px]">
-                                  done
-                                </Badge>
-                              )}
-                              {!isCompleted && isActive && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px]"
-                                >
-                                  running
-                                </Badge>
-                              )}
-                              {canRetryFromStep && (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-6 px-2 text-[10px]"
-                                  onClick={() => handleRetryFromStep(s)}
-                                  disabled={
-                                    !hasOpenAiKey ||
-                                    retryFromStepMutation.isPending ||
-                                    retryMutation.isLoading
-                                  }
-                                >
-                                  {retryFromStepMutation.isPending ? "Retrying..." : "Retry"}
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Progreso dinámico según etapa */}
-                  <Separator />
-                  {job.step === JobStep.PREPROCESSING ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                        <span className="font-medium text-muted-foreground">
-                          Images processed
-                        </span>
-                      <span className="font-mono text-[11px]">
-                          {processedImages} / {totalImagesEffective}
-                      </span>
-                    </div>
-                    <Progress value={progressPct} />
-                  </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-medium text-muted-foreground">
-                          Batches
-                        </span>
-                        <span className="font-mono text-[11px]">
-                          {job.batchesCompleted ?? 0} / {job.totalBatches ?? 0}
-                        </span>
-                      </div>
-                      <Progress value={batchesProgressPct} />
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-medium text-muted-foreground">
-                          Submitted
-                        </span>
-                        <span className="font-mono text-[11px]">
-                          {job.submittedImages ?? 0} / {job.totalImages ?? 0}
-                        </span>
-                      </div>
-                      <Progress value={submittedProgressPct} />
-                    </div>
-                  )}
-
-                  {/* Debug / detalles */}
-                  <Separator />
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      Details
-                    </p>
-                    <ScrollArea className="h-24 rounded-md border bg-muted/40 px-2 py-1 text-xs">
-                      <div className="space-y-1">
-                        <p>
-                          <span className="font-semibold">Status:</span>{" "}
-                          {job.status}
-                        </p>
-                        <p>
-                          <span className="font-semibold">Step:</span>{" "}
-                          {job.step}
-                        </p>
-                        <p>
-                          <span className="font-semibold">Created:</span>{" "}
-                          {job.createdAt
-                            ? new Date(job.createdAt).toLocaleString()
-                            : "-"}
-                        </p>
-                        <p>
-                          <span className="font-semibold">Updated:</span>{" "}
-                          {job.updatedAt
-                            ? new Date(job.updatedAt).toLocaleString()
-                            : "-"}
-                        </p>
-                        {job.error && (
-                          <p className="text-destructive">
-                            <span className="font-semibold">Error:</span>{" "}
-                            {job.error}
-                          </p>
-                        )}
-                      </div>
-                    </ScrollArea>
-                  </div>
-                </>
-              )}
-            </CardContent>
-
-            <CardFooter className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRetry}
-                  disabled={
-                    !hasOpenAiKey ||
-                    !currentJobId ||
-                    retryMutation.isLoading ||
-                    retryFromStepMutation.isPending ||
-                    job?.status === JobsStatus.DONE ||
-                    isProcessing
-                  }
-                >
-                  {retryMutation.isLoading
-                    ? "Retrying..."
-                    : job?.status === JobsStatus.ERROR && job?.step
-                    ? `Retry from ${stepLabel[job.step]}`
-                    : "Retry job"}
-                </Button>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleDownloadTxt}
-                  disabled={
-                    !hasOpenAiKey ||
-                    !currentJobId ||
-                    !job ||
-                    job.status !== "DONE" ||
-                    !job.hasResults ||
-                    resultQuery.isLoading ||
-                    !resultQuery.ocrResult?.txt
-                  }
-                >
-                  Download TXT
-                </Button>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleDownloadDocx}
-                  disabled={
-                    !hasOpenAiKey ||
-                    !currentJobId ||
-                    !job ||
-                    job.status !== "DONE" ||
-                    !job.hasResults ||
-                    resultQuery.isLoading ||
-                    !resultQuery.ocrResult?.docx
-                  }
-                >
-                  Download DOCX
-                </Button>
-
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={handleDownloadRawZip}
-                  disabled={
-                    !hasOpenAiKey ||
-                    !currentJobId ||
-                    !job ||
-                    job.status !== "DONE" ||
-                    !job.hasResults ||
-                    resultQuery.isLoading ||
-                    !resultQuery.ocrResult?.rawZip
-                  }
-                >
-                  Download Filtered ZIP
-                </Button>
-              </div>
-
-              {job?.status === JobsStatus.DONE && (
-                <p className="text-xs text-muted-foreground">
-                  Job finished successfully. You can download the extracted
-                  subtitles as TXT, DOCX, or the filtered RAW ZIP.
-                </p>
-              )}
-              {job?.status === JobsStatus.ERROR && (
-                <p className="text-xs text-destructive">
-                  Job failed. Fix the issue, then click{" "}
-                  <span className="font-semibold">Retry job</span> to resume
-                  from the last step.
-                </p>
-              )}
-            </CardFooter>
-          </Card>
+          <JobProgressCard
+            jobId={currentJobId}
+            job={job ? {
+              jobId: job.jobId,
+              jobType: job.jobType,
+              status: job.status,
+              step: job.step,
+              error: job.error,
+              totalImages: job.totalImages,
+              processedImages: job.processedImages,
+              totalBatches: job.totalBatches,
+              batchesCompleted: job.batchesCompleted,
+              submittedImages: job.submittedImages,
+              hasResults: job.hasResults,
+              createdAt: job.createdAt,
+              updatedAt: job.updatedAt,
+            } : null}
+            isLoading={jobQuery.isLoading}
+            progressPct={progressPct}
+            onRetry={handleRetry}
+            onRetryFromStep={handleRetryFromStep}
+            onDownloadTxt={handleDownloadTxt}
+            onDownloadDocx={handleDownloadDocx}
+            onDownloadRawZip={handleDownloadRawZip}
+            onDownloadCroppedZip={handleDownloadCroppedZip}
+            onRemoveSubtitles={() => {
+              if (!currentJobId) return;
+              removeSubtitlesMutation.mutate({ jobId: currentJobId });
+            }}
+            canRetry={hasOpenAiKey && !!currentJobId && !isProcessing}
+            canDownloadTxt={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.txt}
+            canDownloadDocx={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.docx}
+            canDownloadRawZip={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.rawZip}
+            canDownloadCroppedZip={hasOpenAiKey && !!currentJobId && !!job && job.status === "DONE" && !!job.hasResults && !resultQuery.isLoading && !!resultQuery.ocrResult?.croppedZip}
+            canRemoveSubtitles={hasOpenAiKey && !!currentJobId}
+            isRetrying={retryMutation.isLoading}
+            isRetryingFromStep={retryFromStepMutation.isPending}
+            isRemovingSubtitles={removeSubtitlesMutation.isPending}
+            hasTxtResult={!!resultQuery.ocrResult?.txt}
+            hasDocxResult={!!resultQuery.ocrResult?.docx}
+            hasRawZipResult={!!resultQuery.ocrResult?.rawZip}
+            hasCroppedZipResult={!!resultQuery.ocrResult?.croppedZip}
+          />
         </div>
       </div>
     </div>

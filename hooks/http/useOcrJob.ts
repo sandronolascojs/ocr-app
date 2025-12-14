@@ -14,7 +14,7 @@ export const useOcrJob = (jobId: string | null, options?: UseOcrJobOptions) => {
     refetchIntervalMs = QUERY_CONFIG.REFRESH_INTERVAL_MS,
   } = options ?? {};
 
-  const query = trpc.ocr.getJob.useQuery(
+  const query = trpc.jobs.getJob.useQuery(
     { jobId: jobId ?? "" },
     {
       enabled: Boolean(jobId) && enabled,

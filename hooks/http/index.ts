@@ -1,6 +1,5 @@
 export { useApiKeys } from "./useApiKeys"
 export { useDashboardMetrics } from "./useDashboardMetrics"
-export { useAllDocuments } from "./useAllDocuments"
 export { useDocuments } from "./useDocuments"
 export { useAllImages } from "./useAllImages"
 export { useImages } from "./useImages"
@@ -9,4 +8,6 @@ export { useDeleteApiKey } from "./useDeleteApiKey"
 export { useDeleteAllUserStorage } from "./useDeleteAllUserStorage"
 export { useRetryFromStep } from "./useRetryFromStep"
 export { useDeleteOcrJob } from "./useDeleteOcrJob"
+export { useRemoveSubtitles } from "./useRemoveSubtitles"
+export { useJobs } from "./useJobs"
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
-import { ocrJobs, apiKeys } from "@/db/schema";
+import { ocrJobs, ocrJobItems } from "@/db/schema";
 import { inngest } from "@/inngest/client";
 import {
   createSignedDownloadUrl,
@@ -10,13 +10,14 @@ import {
   deleteObjectsByPrefix,
   ensureObjectExists,
   getJobZipKey,
-  getJobRootKey,
+  getUserRootKey,
   type SignedDownloadUrl,
 } from "@/lib/storage";
-import { InngestEvents, JobsStatus, JobStep, ApiKeyProvider } from "@/types";
+import { InngestEvents, JobsStatus, JobStep, JobType, ApiKeyProvider, Document } from "@/types";
+import { JobItemType } from "@/types/enums/jobs/jobItemType.enum";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
-import { and, count, desc, eq, isNotNull, like, or } from "drizzle-orm";
+import { and, desc, eq, like, or, sql } from "drizzle-orm";
 import { QUERY_CONFIG } from "@/constants/query.constants";
 
 export const ocrRouter = createTRPCRouter({
@@ -28,9 +29,9 @@ export const ocrRouter = createTRPCRouter({
         fileSize: z.number().int().positive(),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const jobId = createId();
-      const zipKey = getJobZipKey(jobId);
+      const zipKey = getJobZipKey(ctx.userId, jobId);
 
       const signedUpload = await createSignedUploadUrl({
         key: zipKey,
@@ -41,100 +42,6 @@ export const ocrRouter = createTRPCRouter({
         jobId,
         upload: signedUpload,
       };
-    }),
-
-  confirmUpload: protectedProcedure
-    .input(
-      z.object({
-        jobId: z.string(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { jobId } = input;
-
-      // Validate that user has an active OpenAI API key
-      const [activeApiKey] = await ctx.db
-        .select()
-        .from(apiKeys)
-        .where(
-          and(
-            eq(apiKeys.userId, ctx.userId),
-            eq(apiKeys.provider, ApiKeyProvider.OPENAI),
-            eq(apiKeys.isActive, true)
-          )
-        )
-        .limit(1);
-
-      if (!activeApiKey) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "You must add an OpenAI API key in Settings before creating jobs.",
-        });
-      }
-
-      // Generate the zipKey from the jobId to verify the file exists
-      const zipKey = getJobZipKey(jobId);
-
-      // Verify that the file actually exists in R2 before creating the job
-      const exists = await ensureObjectExists(zipKey);
-      if (!exists) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "ZIP not uploaded to storage yet",
-        });
-      }
-
-      // Atomically insert or get existing job using upsert with conflict handling
-      // This prevents race conditions where concurrent calls both try to insert
-      const [insertedJob] = await ctx.db
-        .insert(ocrJobs)
-        .values({
-          jobId,
-          userId: ctx.userId,
-          zipPath: zipKey,
-          status: JobsStatus.PENDING,
-          step: JobStep.PREPROCESSING,
-        })
-        .onConflictDoNothing({
-          target: ocrJobs.jobId,
-        })
-        .returning();
-
-      // If insert returned nothing, the job already exists (conflict occurred)
-      // Query for the existing job (must belong to the current user)
-      const job = insertedJob
-        ? insertedJob
-        : await ctx.db
-            .select()
-            .from(ocrJobs)
-            .where(and(eq(ocrJobs.jobId, jobId), eq(ocrJobs.userId, ctx.userId)))
-            .limit(1)
-            .then((rows) => rows[0]);
-
-      if (!job) {
-        // This should never happen, but handle it defensively
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Failed to create or retrieve job",
-        });
-      }
-
-      // Verify the job is in the correct state
-      if (job.status !== JobsStatus.PENDING) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Job already confirmed",
-          });
-        }
-
-      // Trigger Inngest event to start processing
-      await inngest.send({
-        name: InngestEvents.ZIP_UPLOADED,
-        data: { jobId, zipKey: job.zipPath, userId: ctx.userId },
-      });
-
-      return { jobId };
     }),
 
   abortUpload: protectedProcedure
@@ -170,7 +77,7 @@ export const ocrRouter = createTRPCRouter({
       }
 
       // Delete the uploaded file
-      const zipKey = getJobZipKey(jobId);
+      const zipKey = getJobZipKey(ctx.userId, jobId);
       try {
         await deleteObjectIfExists(zipKey);
         return { jobId, deleted: true };
@@ -182,223 +89,6 @@ export const ocrRouter = createTRPCRouter({
       }
     }),
 
-  deleteJob: protectedProcedure
-    .input(
-      z.object({
-        jobId: z.string(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { jobId } = input;
-
-      // Load job metadata by jobId
-      const [job] = await ctx.db
-        .select()
-        .from(ocrJobs)
-        .where(eq(ocrJobs.jobId, jobId))
-        .limit(1);
-
-      // Handle missing job
-      if (!job) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Job not found",
-        });
-      }
-
-      // Verify ownership
-      if (job.userId !== ctx.userId) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "You do not have permission to delete this job",
-        });
-      }
-
-      const errors: string[] = [];
-
-      try {
-        // Delete all files under the job's root prefix (includes zip, crops, thumbnail, normalized images, etc.)
-        const jobRootPrefix = getJobRootKey(jobId);
-        try {
-          await deleteObjectsByPrefix(jobRootPrefix);
-        } catch (error) {
-          errors.push(
-            `Failed to delete files under job root: ${error instanceof Error ? error.message : "Unknown error"}`
-          );
-        }
-
-        // Delete individual files that might be outside the root prefix
-        const filesToDelete = [
-          job.zipPath,
-          job.txtPath,
-          job.docxPath,
-          job.rawZipPath,
-          job.thumbnailKey,
-        ].filter((key): key is string => key !== null && key !== undefined);
-
-        for (const key of filesToDelete) {
-          try {
-            await deleteObjectIfExists(key);
-          } catch (error) {
-            errors.push(
-              `Failed to delete file ${key}: ${error instanceof Error ? error.message : "Unknown error"}`
-            );
-          }
-        }
-
-        // Delete the job from database (frames will be deleted automatically via cascade)
-        await ctx.db.delete(ocrJobs).where(eq(ocrJobs.jobId, jobId));
-
-        // If there were errors but we still deleted the job, log them but don't fail
-        if (errors.length > 0) {
-          console.warn(
-            `Job ${jobId} deleted from database, but some files failed to delete:`,
-            errors
-          );
-        }
-
-        return {
-          jobId,
-          deleted: true,
-          errors: errors.length > 0 ? errors : undefined,
-        };
-      } catch (error) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: `Failed to delete job: ${error instanceof Error ? error.message : "Unknown error"}`,
-        });
-      }
-    }),
-
-  getJob: protectedProcedure
-    .input(
-      z.object({
-        jobId: z.string(),
-      })
-    )
-    .query(async ({ ctx, input }) => {
-      const [job] = await ctx.db
-        .select()
-        .from(ocrJobs)
-        .where(and(eq(ocrJobs.jobId, input.jobId), eq(ocrJobs.userId, ctx.userId)))
-        .limit(1);
-
-      if (!job) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Job not found",
-        });
-      }
-
-      return {
-        jobId: job.jobId,
-        status: job.status,
-        step: job.step,
-        error: job.error,
-        totalImages: job.totalImages,
-        processedImages: job.processedImages,
-        totalBatches: job.totalBatches,
-        batchesCompleted: job.batchesCompleted,
-        submittedImages: job.submittedImages,
-        hasResults: Boolean(job.txtPath && job.docxPath),
-        createdAt: job.createdAt,
-        updatedAt: job.updatedAt,
-      };
-    }),
-
-  listJobs: protectedProcedure
-    .input(
-      z
-        .object({
-          limit: z
-            .number()
-            .min(QUERY_CONFIG.PAGINATION.MIN_LIMIT)
-            .max(QUERY_CONFIG.PAGINATION.MAX_LIMIT)
-            .default(QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT),
-          offset: z
-            .number()
-            .min(QUERY_CONFIG.PAGINATION.MIN_OFFSET)
-            .default(QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET),
-        })
-        .optional()
-    )
-    .query(async ({ ctx, input }) => {
-      const limit = input?.limit ?? QUERY_CONFIG.PAGINATION.DEFAULT_LIMIT;
-      const offset = input?.offset ?? QUERY_CONFIG.PAGINATION.DEFAULT_OFFSET;
-
-      const whereCondition = eq(ocrJobs.userId, ctx.userId);
-
-      const [jobs, totalResult] = await Promise.all([
-        ctx.db
-          .select()
-          .from(ocrJobs)
-          .where(whereCondition)
-          .orderBy(desc(ocrJobs.createdAt))
-          .limit(limit)
-          .offset(offset),
-        ctx.db
-          .select({ count: count() })
-          .from(ocrJobs)
-          .where(whereCondition),
-      ]);
-
-      const total = totalResult[0]?.count ?? 0;
-
-      return {
-        jobs: jobs.map((job) => ({
-          jobId: job.jobId,
-          status: job.status,
-          step: job.step,
-          error: job.error,
-          totalImages: job.totalImages,
-          processedImages: job.processedImages,
-          totalBatches: job.totalBatches,
-          batchesCompleted: job.batchesCompleted,
-          submittedImages: job.submittedImages,
-          hasResults: Boolean(job.txtPath && job.docxPath),
-          txtSizeBytes: job.txtSizeBytes ?? null,
-          docxSizeBytes: job.docxSizeBytes ?? null,
-          rawZipSizeBytes: job.rawZipSizeBytes ?? null,
-          thumbnailKey: job.thumbnailKey ?? null,
-          createdAt: job.createdAt,
-          updatedAt: job.updatedAt,
-          progressPct: (() => {
-            // Images progress
-            const imageProgress =
-              job.totalImages > 0
-                ? Math.min(1, Math.max(0, (job.processedImages ?? 0) / job.totalImages))
-                : 0;
-
-            // Batches progress
-            const batchProgress =
-              job.totalBatches > 0
-                ? Math.min(1, Math.max(0, (job.batchesCompleted ?? 0) / job.totalBatches))
-                : 0;
-
-            // Step progress
-            const stepOrder: JobStep[] = [
-              JobStep.PREPROCESSING,
-              JobStep.BATCH_SUBMITTED,
-              JobStep.RESULTS_SAVED,
-              JobStep.DOCS_BUILT,
-            ];
-            const stepIndex = stepOrder.findIndex((s) => s === job.step);
-            const stepProgress =
-              stepIndex >= 0 ? stepIndex / Math.max(stepOrder.length - 1, 1) : 0;
-
-            const overall =
-              job.status === JobsStatus.DONE
-                ? 1
-                : Math.max(imageProgress, batchProgress, stepProgress);
-
-            return Math.round(overall * 100);
-          })(),
-        })),
-        total,
-        limit,
-        offset,
-      };
-    }),
 
   retryJob: protectedProcedure
     .input(
@@ -422,15 +112,26 @@ export const ocrRouter = createTRPCRouter({
       // If you want to restrict, you can allow retry only if the job is in ERROR state
       // if (job.status !== JobsStatus.ERROR) throw new TRPCError({ code: "BAD_REQUEST", message: "Job is not in ERROR state" });
 
-      // We ensure that the zip is still there
-      if (!job.zipPath) {
+      // Get ORIGINAL_ZIP item
+      const [originalZipItem] = await ctx.db
+        .select()
+        .from(ocrJobItems)
+        .where(
+          and(
+            eq(ocrJobItems.jobId, jobId),
+            eq(ocrJobItems.itemType, JobItemType.ORIGINAL_ZIP)
+          )
+        )
+        .limit(1);
+
+      if (!originalZipItem) {
         throw new TRPCError({
           code: "NOT_FOUND",
-          message: "Zip path not found for this job",
+          message: "Original ZIP not found for this job",
         });
       }
 
-      const zipExists = await ensureObjectExists(job.zipPath);
+      const zipExists = await ensureObjectExists(originalZipItem.storageKey);
       if (!zipExists) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -452,7 +153,7 @@ export const ocrRouter = createTRPCRouter({
         name: InngestEvents.ZIP_UPLOADED,
         data: {
           jobId,
-          zipKey: job.zipPath,
+          zipKey: originalZipItem.storageKey,
           userId: ctx.userId,
         },
       });
@@ -488,15 +189,26 @@ export const ocrRouter = createTRPCRouter({
         });
       }
 
-      // We ensure that the zip is still there
-      if (!job.zipPath) {
+      // Get ORIGINAL_ZIP item
+      const [originalZipItem] = await ctx.db
+        .select()
+        .from(ocrJobItems)
+        .where(
+          and(
+            eq(ocrJobItems.jobId, jobId),
+            eq(ocrJobItems.itemType, JobItemType.ORIGINAL_ZIP)
+          )
+        )
+        .limit(1);
+
+      if (!originalZipItem) {
         throw new TRPCError({
           code: "NOT_FOUND",
-          message: "Zip path not found for this job",
+          message: "Original ZIP not found for this job",
         });
       }
 
-      const zipExists = await ensureObjectExists(job.zipPath);
+      const zipExists = await ensureObjectExists(originalZipItem.storageKey);
       if (!zipExists) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -519,7 +231,7 @@ export const ocrRouter = createTRPCRouter({
         name: InngestEvents.ZIP_UPLOADED,
         data: {
           jobId,
-          zipKey: job.zipPath,
+          zipKey: originalZipItem.storageKey,
           userId: ctx.userId,
         },
       });
@@ -530,33 +242,80 @@ export const ocrRouter = createTRPCRouter({
   getResult: protectedProcedure
     .input(z.object({ jobId: z.string() }))
     .query(async ({ ctx, input }) => {
+      // Verify job ownership
       const [job] = await ctx.db
         .select()
         .from(ocrJobs)
         .where(and(eq(ocrJobs.jobId, input.jobId), eq(ocrJobs.userId, ctx.userId)))
         .limit(1);
 
-      if (!job || !job.txtPath || !job.docxPath) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Result not ready" });
+      if (!job) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Job not found" });
       }
 
-      const [txtUrl, docxUrl, rawZipUrl] = await Promise.all([
-        createSignedDownloadUrl({
-          key: job.txtPath,
-          responseContentType: "text/plain",
-          downloadFilename: `${job.jobId}.txt`,
-        }),
-        createSignedDownloadUrl({
-          key: job.docxPath,
-          responseContentType:
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          downloadFilename: `${job.jobId}.docx`,
-        }),
-        job.rawZipPath
+      // Get all items by type in a single query
+      const items = await ctx.db
+        .select()
+        .from(ocrJobItems)
+        .where(
+          and(
+            eq(ocrJobItems.jobId, input.jobId),
+            or(
+              eq(ocrJobItems.itemType, JobItemType.TXT_DOCUMENT),
+              eq(ocrJobItems.itemType, JobItemType.DOCX_DOCUMENT),
+              eq(ocrJobItems.itemType, JobItemType.RAW_ZIP),
+              eq(ocrJobItems.itemType, JobItemType.CROPPED_ZIP)
+            )
+          )
+        );
+
+      // Extract items by type
+      const txtItem = items.find((item) => item.itemType === JobItemType.TXT_DOCUMENT);
+      const docxItem = items.find((item) => item.itemType === JobItemType.DOCX_DOCUMENT);
+      const rawZipItem = items.find((item) => item.itemType === JobItemType.RAW_ZIP);
+      const croppedZipItem = items.find((item) => item.itemType === JobItemType.CROPPED_ZIP);
+
+      // Get keys from items
+      const txtKey = txtItem?.storageKey ?? null;
+      const docxKey = docxItem?.storageKey ?? null;
+      const rawZipKey = rawZipItem?.storageKey ?? null;
+      const croppedZipKey = croppedZipItem?.storageKey ?? null;
+
+      // For OCR jobs, require TXT and DOCX. For SUBTITLE_REMOVAL jobs, only require cropped ZIP
+      if (job.jobType === JobType.OCR) {
+        if (!txtKey || !docxKey) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Result not ready" });
+        }
+      }
+
+      const [txtUrl, docxUrl, rawZipUrl, croppedZipUrl] = await Promise.all([
+        txtKey
           ? createSignedDownloadUrl({
-              key: job.rawZipPath,
+              key: txtKey,
+              responseContentType: "text/plain",
+              downloadFilename: `${job.jobId}.txt`,
+            })
+          : Promise.resolve(null),
+        docxKey
+          ? createSignedDownloadUrl({
+              key: docxKey,
+              responseContentType:
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              downloadFilename: `${job.jobId}.docx`,
+            })
+          : Promise.resolve(null),
+        rawZipKey
+          ? createSignedDownloadUrl({
+              key: rawZipKey,
               responseContentType: "application/zip",
               downloadFilename: `${job.jobId}-raw.zip`,
+            })
+          : Promise.resolve(null),
+        croppedZipKey
+          ? createSignedDownloadUrl({
+              key: croppedZipKey,
+              responseContentType: "application/zip",
+              downloadFilename: `${job.jobId}-cropped.zip`,
             })
           : Promise.resolve(null),
       ]);
@@ -565,94 +324,8 @@ export const ocrRouter = createTRPCRouter({
         txt: txtUrl,
         docx: docxUrl,
         rawZip: rawZipUrl,
+        croppedZip: croppedZipUrl,
       };
-    }),
-
-  getAllDocuments: protectedProcedure.query(async ({ ctx }) => {
-    const jobs = await ctx.db
-      .select()
-      .from(ocrJobs)
-      .where(
-        and(
-          eq(ocrJobs.userId, ctx.userId),
-          or(isNotNull(ocrJobs.txtPath), isNotNull(ocrJobs.docxPath))
-        )
-      )
-      .orderBy(desc(ocrJobs.createdAt));
-
-    const documents: Array<{
-      jobId: string;
-      type: "txt" | "docx";
-      sizeBytes: number | null;
-      url: SignedDownloadUrl | null;
-      filesExist: boolean;
-      thumbnailUrl: SignedDownloadUrl | null;
-      thumbnailKey: string | null;
-      createdAt: Date | null;
-      updatedAt: Date | null;
-    }> = [];
-
-    for (const job of jobs) {
-      // Get thumbnail for this job (shared across both txt and docx documents)
-      let thumbnailUrl: SignedDownloadUrl | null = null;
-      let thumbnailKey: string | null = job.thumbnailKey ?? null;
-
-      if (job.thumbnailKey) {
-        const thumbnailExists = await ensureObjectExists(job.thumbnailKey);
-        if (thumbnailExists) {
-          thumbnailUrl = await createSignedThumbnailUrl(job.thumbnailKey);
-        }
-      }
-
-      if (job.txtPath) {
-        const exists = await ensureObjectExists(job.txtPath);
-        const url = exists
-          ? await createSignedDownloadUrl({
-              key: job.txtPath,
-              responseContentType: "text/plain",
-              downloadFilename: `${job.jobId}.txt`,
-            })
-          : null;
-
-        documents.push({
-          jobId: job.jobId,
-          type: "txt",
-          sizeBytes: job.txtSizeBytes ?? null,
-          url,
-          filesExist: exists,
-          thumbnailUrl,
-          thumbnailKey,
-          createdAt: job.createdAt,
-          updatedAt: job.updatedAt,
-        });
-      }
-
-      if (job.docxPath) {
-        const exists = await ensureObjectExists(job.docxPath);
-        const url = exists
-          ? await createSignedDownloadUrl({
-              key: job.docxPath,
-              responseContentType:
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-              downloadFilename: `${job.jobId}.docx`,
-            })
-          : null;
-
-        documents.push({
-          jobId: job.jobId,
-          type: "docx",
-          sizeBytes: job.docxSizeBytes ?? null,
-          url,
-          filesExist: exists,
-          thumbnailUrl,
-          thumbnailKey,
-          createdAt: job.createdAt,
-          updatedAt: job.updatedAt,
-        });
-      }
-    }
-
-    return documents;
   }),
 
   listDocuments: protectedProcedure
@@ -682,108 +355,193 @@ export const ocrRouter = createTRPCRouter({
       const documentType = input?.type ?? QUERY_CONFIG.DOCUMENTS.DEFAULT_TYPE;
       const jobIdFilter = input?.jobId?.trim();
 
-      // Build base where condition
-      const baseConditions = [
-        eq(ocrJobs.userId, ctx.userId),
-        or(isNotNull(ocrJobs.txtPath), isNotNull(ocrJobs.docxPath)),
-      ];
+      // Build base conditions
+      const baseConditions = [eq(ocrJobs.userId, ctx.userId)];
 
       // Add jobId filter if provided
       if (jobIdFilter) {
         baseConditions.push(like(ocrJobs.jobId, `%${jobIdFilter}%`));
       }
 
-      // Get all matching jobs
-      const jobs = await ctx.db
-        .select()
+      // Build document type filter for items
+      const documentTypeFilters: JobItemType[] = [];
+      if (documentType === "all" || documentType === "txt") {
+        documentTypeFilters.push(JobItemType.TXT_DOCUMENT);
+      }
+      if (documentType === "all" || documentType === "docx") {
+        documentTypeFilters.push(JobItemType.DOCX_DOCUMENT);
+      }
+
+      // Get total count of unique jobs with documents matching the filter (compatible with Neon HTTP)
+      const [{ count: total }] = await ctx.db
+        .select({ count: sql<number>`count(distinct ${ocrJobs.jobId})`.as("count") })
         .from(ocrJobs)
+        .innerJoin(
+          ocrJobItems,
+          and(
+            eq(ocrJobItems.jobId, ocrJobs.jobId),
+            or(...documentTypeFilters.map((type) => eq(ocrJobItems.itemType, type)))
+          )
+        )
+        .where(and(...baseConditions));
+
+      // Get paginated jobs with items
+      // Use INNER JOIN to filter only jobs with documents matching the filter
+      const jobsWithItems = await ctx.db
+        .select({
+          jobId: ocrJobs.jobId,
+          createdAt: ocrJobs.createdAt,
+          updatedAt: ocrJobs.updatedAt,
+          itemType: ocrJobItems.itemType,
+          storageKey: ocrJobItems.storageKey,
+          sizeBytes: ocrJobItems.sizeBytes,
+        })
+        .from(ocrJobs)
+        .innerJoin(
+          ocrJobItems,
+          and(
+            eq(ocrJobItems.jobId, ocrJobs.jobId),
+            or(...documentTypeFilters.map((type) => eq(ocrJobItems.itemType, type)))
+          )
+        )
         .where(and(...baseConditions))
-        .orderBy(desc(ocrJobs.createdAt));
+        .groupBy(ocrJobs.jobId, ocrJobs.createdAt, ocrJobs.updatedAt, ocrJobItems.itemType, ocrJobItems.storageKey, ocrJobItems.sizeBytes)
+        .orderBy(desc(ocrJobs.createdAt))
+        .limit(limit)
+        .offset(offset);
 
-      // Build documents array
-      const documents: Array<{
-        jobId: string;
-        type: "txt" | "docx";
-        sizeBytes: number | null;
-        url: SignedDownloadUrl | null;
-        filesExist: boolean;
-        thumbnailUrl: SignedDownloadUrl | null;
-        thumbnailKey: string | null;
-        createdAt: Date | null;
-        updatedAt: Date | null;
-      }> = [];
+      if (jobsWithItems.length === 0) {
+        return {
+          documents: [],
+          total,
+          limit,
+          offset,
+        };
+      }
 
-      for (const job of jobs) {
-        // Get thumbnail for this job (shared across both txt and docx documents)
-        let thumbnailUrl: SignedDownloadUrl | null = null;
-        let thumbnailKey: string | null = job.thumbnailKey ?? null;
+      const paginatedJobIds = Array.from(new Set(jobsWithItems.map((j) => j.jobId)));
+      const jobsMap = new Map(
+        jobsWithItems.map((j) => [j.jobId, { createdAt: j.createdAt, updatedAt: j.updatedAt }])
+      );
 
-        if (job.thumbnailKey) {
-          const thumbnailExists = await ensureObjectExists(job.thumbnailKey);
-          if (thumbnailExists) {
-            thumbnailUrl = await createSignedThumbnailUrl(job.thumbnailKey);
-          }
+      // Get all items (documents + thumbnails) for these paginated jobs in one query
+      const allItems = paginatedJobIds.length > 0
+        ? await ctx.db
+            .select()
+            .from(ocrJobItems)
+            .where(
+              and(
+                or(...paginatedJobIds.map((id) => eq(ocrJobItems.jobId, id))),
+                or(
+                  ...documentTypeFilters.map((type) => eq(ocrJobItems.itemType, type)),
+                  eq(ocrJobItems.itemType, JobItemType.THUMBNAIL)
+                )
+              )
+            )
+        : [];
+
+      // Group items by jobId
+      const itemsByJob = new Map<
+        string,
+        Map<JobItemType, { storageKey: string; sizeBytes: number | null }>
+      >();
+
+      for (const item of allItems) {
+        if (!itemsByJob.has(item.jobId)) {
+          itemsByJob.set(item.jobId, new Map());
         }
-
-        // Add txt document if exists and matches filter
-        if (job.txtPath && (documentType === "all" || documentType === "txt")) {
-          const exists = await ensureObjectExists(job.txtPath);
-          const url = exists
-            ? await createSignedDownloadUrl({
-                key: job.txtPath,
-                responseContentType: "text/plain",
-                downloadFilename: `${job.jobId}.txt`,
-              })
-            : null;
-
-          documents.push({
-            jobId: job.jobId,
-            type: "txt",
-            sizeBytes: job.txtSizeBytes ?? null,
-            url,
-            filesExist: exists,
-            thumbnailUrl,
-            thumbnailKey,
-            createdAt: job.createdAt,
-            updatedAt: job.updatedAt,
-          });
-        }
-
-        // Add docx document if exists and matches filter
-        if (
-          job.docxPath &&
-          (documentType === "all" || documentType === "docx")
-        ) {
-          const exists = await ensureObjectExists(job.docxPath);
-          const url = exists
-            ? await createSignedDownloadUrl({
-                key: job.docxPath,
-                responseContentType:
-                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                downloadFilename: `${job.jobId}.docx`,
-              })
-            : null;
-
-          documents.push({
-            jobId: job.jobId,
-            type: "docx",
-            sizeBytes: job.docxSizeBytes ?? null,
-            url,
-            filesExist: exists,
-            thumbnailUrl,
-            thumbnailKey,
-            createdAt: job.createdAt,
-            updatedAt: job.updatedAt,
+        const jobItems = itemsByJob.get(item.jobId)!;
+        if (item.storageKey) {
+          jobItems.set(item.itemType, {
+            storageKey: item.storageKey,
+            sizeBytes: item.sizeBytes,
           });
         }
       }
 
-      // Apply pagination to the documents array
-      const total = documents.length;
-      const paginatedDocuments = documents.slice(offset, offset + limit);
+      // Build documents array with signed URLs
+      const documents: Document[] = [];
+
+      for (const jobId of paginatedJobIds) {
+        const jobInfo = jobsMap.get(jobId);
+        if (!jobInfo) continue;
+
+        const jobItems = itemsByJob.get(jobId);
+        if (!jobItems) continue;
+
+        const txtItem = jobItems.get(JobItemType.TXT_DOCUMENT);
+        const docxItem = jobItems.get(JobItemType.DOCX_DOCUMENT);
+        const thumbnailItem = jobItems.get(JobItemType.THUMBNAIL);
+
+        // Get thumbnail URL if exists
+        let thumbnailUrl: SignedDownloadUrl | null = null;
+        const thumbnailKey = thumbnailItem?.storageKey ?? null;
+        if (thumbnailKey) {
+          const thumbnailExists = await ensureObjectExists(thumbnailKey);
+          if (thumbnailExists) {
+            thumbnailUrl = await createSignedThumbnailUrl(thumbnailKey);
+          }
+        }
+
+        // Build document files
+        let txtFile: Document["txt"] = null;
+        let docxFile: Document["docx"] = null;
+
+        // TXT document
+        if (txtItem && (documentType === "all" || documentType === "txt")) {
+          const exists = await ensureObjectExists(txtItem.storageKey);
+          const url = exists
+            ? await createSignedDownloadUrl({
+                key: txtItem.storageKey,
+                responseContentType: "text/plain",
+                downloadFilename: `${jobId}.txt`,
+              })
+            : null;
+
+          txtFile = {
+            type: "txt",
+            sizeBytes: txtItem.sizeBytes,
+            url,
+            filesExist: exists,
+          };
+        }
+
+        // DOCX document
+        if (docxItem && (documentType === "all" || documentType === "docx")) {
+          const exists = await ensureObjectExists(docxItem.storageKey);
+          const url = exists
+            ? await createSignedDownloadUrl({
+                key: docxItem.storageKey,
+                responseContentType:
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                downloadFilename: `${jobId}.docx`,
+              })
+            : null;
+
+          docxFile = {
+            type: "docx",
+            sizeBytes: docxItem.sizeBytes,
+            url,
+            filesExist: exists,
+          };
+        }
+
+        // Only add job if it has at least one document matching the filter
+        if (txtFile || docxFile) {
+          documents.push({
+            jobId,
+            txt: txtFile,
+            docx: docxFile,
+            thumbnailUrl,
+            thumbnailKey,
+            createdAt: jobInfo.createdAt,
+            updatedAt: jobInfo.updatedAt,
+          });
+        }
+      }
 
       return {
-        documents: paginatedDocuments,
+        documents,
         total,
         limit,
         offset,
@@ -794,7 +552,7 @@ export const ocrRouter = createTRPCRouter({
     const jobs = await ctx.db
       .select()
       .from(ocrJobs)
-      .where(and(eq(ocrJobs.userId, ctx.userId), isNotNull(ocrJobs.rawZipPath)))
+      .where(eq(ocrJobs.userId, ctx.userId))
       .orderBy(desc(ocrJobs.createdAt));
 
     const images: Array<{
@@ -802,46 +560,78 @@ export const ocrRouter = createTRPCRouter({
       thumbnailUrl: SignedDownloadUrl | null;
       thumbnailKey: string | null;
       zipUrl: SignedDownloadUrl | null;
+      croppedZipUrl: SignedDownloadUrl | null;
       sizeBytes: number | null;
+      croppedSizeBytes: number | null;
       filesExist: {
         thumbnail: boolean;
         zip: boolean;
+        croppedZip: boolean;
       };
       createdAt: Date | null;
       updatedAt: Date | null;
     }> = [];
 
     for (const job of jobs) {
-      if (!job.rawZipPath) continue;
+      // Get items for this job
+      const jobItems = await ctx.db
+        .select()
+        .from(ocrJobItems)
+        .where(eq(ocrJobItems.jobId, job.jobId));
 
-      const zipExists = await ensureObjectExists(job.rawZipPath);
+      const rawZipItem = jobItems.find((item) => item.itemType === JobItemType.RAW_ZIP);
+      const croppedZipItem = jobItems.find((item) => item.itemType === JobItemType.CROPPED_ZIP);
+      const thumbnailItem = jobItems.find((item) => item.itemType === JobItemType.THUMBNAIL);
+
+      const rawZipKey = rawZipItem?.storageKey ?? null;
+      if (!rawZipKey) continue;
+
+      const zipExists = await ensureObjectExists(rawZipKey);
       const zipUrl = zipExists
         ? await createSignedDownloadUrl({
-            key: job.rawZipPath,
+            key: rawZipKey,
             responseContentType: "application/zip",
             downloadFilename: `${job.jobId}-raw.zip`,
           })
         : null;
 
+      const croppedZipKey = croppedZipItem?.storageKey ?? null;
+      let croppedZipUrl: SignedDownloadUrl | null = null;
+      let croppedZipExists = false;
+      if (croppedZipKey) {
+        croppedZipExists = await ensureObjectExists(croppedZipKey);
+        if (croppedZipExists) {
+          croppedZipUrl = await createSignedDownloadUrl({
+            key: croppedZipKey,
+            responseContentType: "application/zip",
+            downloadFilename: `${job.jobId}-cropped.zip`,
+          });
+        }
+      }
+
       let thumbnailUrl: SignedDownloadUrl | null = null;
       let thumbnailExists = false;
+      const thumbnailKey = thumbnailItem?.storageKey ?? null;
 
-      if (job.thumbnailKey) {
-        thumbnailExists = await ensureObjectExists(job.thumbnailKey);
+      if (thumbnailKey) {
+        thumbnailExists = await ensureObjectExists(thumbnailKey);
         if (thumbnailExists) {
-          thumbnailUrl = await createSignedThumbnailUrl(job.thumbnailKey);
+          thumbnailUrl = await createSignedThumbnailUrl(thumbnailKey);
         }
       }
 
       images.push({
         jobId: job.jobId,
         thumbnailUrl,
-        thumbnailKey: job.thumbnailKey ?? null,
+        thumbnailKey,
         zipUrl,
-        sizeBytes: job.rawZipSizeBytes ?? null,
+        croppedZipUrl,
+        sizeBytes: rawZipItem?.sizeBytes ?? null,
+        croppedSizeBytes: croppedZipItem?.sizeBytes ?? null,
         filesExist: {
           thumbnail: thumbnailExists,
           zip: zipExists,
+          croppedZip: croppedZipExists,
         },
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
@@ -874,7 +664,7 @@ export const ocrRouter = createTRPCRouter({
       const jobs = await ctx.db
         .select()
         .from(ocrJobs)
-        .where(and(eq(ocrJobs.userId, ctx.userId), isNotNull(ocrJobs.rawZipPath)))
+        .where(eq(ocrJobs.userId, ctx.userId))
         .orderBy(desc(ocrJobs.createdAt));
 
       const images: Array<{
@@ -882,46 +672,78 @@ export const ocrRouter = createTRPCRouter({
         thumbnailUrl: SignedDownloadUrl | null;
         thumbnailKey: string | null;
         zipUrl: SignedDownloadUrl | null;
+        croppedZipUrl: SignedDownloadUrl | null;
         sizeBytes: number | null;
+        croppedSizeBytes: number | null;
         filesExist: {
           thumbnail: boolean;
           zip: boolean;
+          croppedZip: boolean;
         };
         createdAt: Date | null;
         updatedAt: Date | null;
       }> = [];
 
       for (const job of jobs) {
-        if (!job.rawZipPath) continue;
+        // Get items for this job
+        const jobItems = await ctx.db
+          .select()
+          .from(ocrJobItems)
+          .where(eq(ocrJobItems.jobId, job.jobId));
 
-        const zipExists = await ensureObjectExists(job.rawZipPath);
+        const rawZipItem = jobItems.find((item) => item.itemType === JobItemType.RAW_ZIP);
+        const croppedZipItem = jobItems.find((item) => item.itemType === JobItemType.CROPPED_ZIP);
+        const thumbnailItem = jobItems.find((item) => item.itemType === JobItemType.THUMBNAIL);
+
+        const rawZipKey = rawZipItem?.storageKey ?? null;
+        if (!rawZipKey) continue;
+
+        const zipExists = await ensureObjectExists(rawZipKey);
         const zipUrl = zipExists
           ? await createSignedDownloadUrl({
-              key: job.rawZipPath,
+              key: rawZipKey,
               responseContentType: "application/zip",
               downloadFilename: `${job.jobId}-raw.zip`,
             })
           : null;
 
+        const croppedZipKey = croppedZipItem?.storageKey ?? null;
+        let croppedZipUrl: SignedDownloadUrl | null = null;
+        let croppedZipExists = false;
+        if (croppedZipKey) {
+          croppedZipExists = await ensureObjectExists(croppedZipKey);
+          if (croppedZipExists) {
+            croppedZipUrl = await createSignedDownloadUrl({
+              key: croppedZipKey,
+              responseContentType: "application/zip",
+              downloadFilename: `${job.jobId}-cropped.zip`,
+            });
+          }
+        }
+
         let thumbnailUrl: SignedDownloadUrl | null = null;
         let thumbnailExists = false;
+        const thumbnailKey = thumbnailItem?.storageKey ?? null;
 
-        if (job.thumbnailKey) {
-          thumbnailExists = await ensureObjectExists(job.thumbnailKey);
+        if (thumbnailKey) {
+          thumbnailExists = await ensureObjectExists(thumbnailKey);
           if (thumbnailExists) {
-            thumbnailUrl = await createSignedThumbnailUrl(job.thumbnailKey);
+            thumbnailUrl = await createSignedThumbnailUrl(thumbnailKey);
           }
         }
 
         images.push({
           jobId: job.jobId,
           thumbnailUrl,
-          thumbnailKey: job.thumbnailKey ?? null,
+          thumbnailKey,
           zipUrl,
-          sizeBytes: job.rawZipSizeBytes ?? null,
+          croppedZipUrl,
+          sizeBytes: rawZipItem?.sizeBytes ?? null,
+          croppedSizeBytes: croppedZipItem?.sizeBytes ?? null,
           filesExist: {
             thumbnail: thumbnailExists,
             zip: zipExists,
+            croppedZip: croppedZipExists,
           },
           createdAt: job.createdAt,
           updatedAt: job.updatedAt,
@@ -941,47 +763,192 @@ export const ocrRouter = createTRPCRouter({
     }),
 
   getStorageStats: protectedProcedure.query(async ({ ctx }) => {
+    // Get all jobs for the user
     const jobs = await ctx.db
-      .select()
+      .select({ jobId: ocrJobs.jobId })
       .from(ocrJobs)
       .where(eq(ocrJobs.userId, ctx.userId));
+
+    const jobIds = jobs.map((j) => j.jobId);
+
+    if (jobIds.length === 0) {
+      return {
+        totalBytes: 0,
+        breakdown: {
+          txtBytes: 0,
+          docxBytes: 0,
+          rawZipBytes: 0,
+          originalZipBytes: 0,
+          croppedZipBytes: 0,
+        },
+      };
+    }
+
+    // Get all items for these jobs
+    const items = await ctx.db
+      .select()
+      .from(ocrJobItems)
+      .where(
+        and(
+          or(...jobIds.map((id: string) => eq(ocrJobItems.jobId, id))),
+          or(
+            eq(ocrJobItems.itemType, JobItemType.TXT_DOCUMENT),
+            eq(ocrJobItems.itemType, JobItemType.DOCX_DOCUMENT),
+            eq(ocrJobItems.itemType, JobItemType.RAW_ZIP),
+            eq(ocrJobItems.itemType, JobItemType.ORIGINAL_ZIP),
+            eq(ocrJobItems.itemType, JobItemType.CROPPED_ZIP)
+          )
+        )
+      );
 
     let totalTxtBytes = 0;
     let totalDocxBytes = 0;
     let totalZipBytes = 0;
+    let originalZipBytes = 0;
+    let croppedZipBytes = 0;
 
-    for (const job of jobs) {
-      if (job.txtSizeBytes) {
-        totalTxtBytes += job.txtSizeBytes;
+    for (const item of items) {
+      const size = item.sizeBytes ?? 0;
+      if (item.itemType === JobItemType.TXT_DOCUMENT) {
+        totalTxtBytes += size;
       }
-      if (job.docxSizeBytes) {
-        totalDocxBytes += job.docxSizeBytes;
+      if (item.itemType === JobItemType.DOCX_DOCUMENT) {
+        totalDocxBytes += size;
       }
-      if (job.rawZipSizeBytes) {
-        totalZipBytes += job.rawZipSizeBytes;
+      if (item.itemType === JobItemType.RAW_ZIP) {
+        totalZipBytes += size;
+      }
+      if (item.itemType === JobItemType.ORIGINAL_ZIP) {
+        originalZipBytes += size;
+      }
+      if (item.itemType === JobItemType.CROPPED_ZIP) {
+        croppedZipBytes += size;
       }
     }
 
-    const totalBytes = totalTxtBytes + totalDocxBytes + totalZipBytes;
+    const totalBytes = totalTxtBytes + totalDocxBytes + totalZipBytes + originalZipBytes + croppedZipBytes;
 
     return {
       totalBytes,
       breakdown: {
         txtBytes: totalTxtBytes,
         docxBytes: totalDocxBytes,
-        zipBytes: totalZipBytes,
+        rawZipBytes: totalZipBytes,
+        originalZipBytes,
+        croppedZipBytes,
       },
     };
   }),
 
-  getDashboardMetrics: protectedProcedure.query(async ({ ctx }) => {
-    // Get all jobs for statistics (filtered by userId)
-    const allJobs = await ctx.db
+  getJobStorageStats: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { jobId } = input;
+
+      // Verify job exists and belongs to user
+      const [job] = await ctx.db
+        .select({ jobId: ocrJobs.jobId })
+      .from(ocrJobs)
+        .where(and(eq(ocrJobs.jobId, jobId), eq(ocrJobs.userId, ctx.userId)))
+        .limit(1);
+
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Job not found",
+        });
+      }
+
+      // Get all items for this job
+      const items = await ctx.db
       .select()
+        .from(ocrJobItems)
+      .where(
+        and(
+            eq(ocrJobItems.jobId, jobId),
+            or(
+              eq(ocrJobItems.itemType, JobItemType.TXT_DOCUMENT),
+              eq(ocrJobItems.itemType, JobItemType.DOCX_DOCUMENT),
+              eq(ocrJobItems.itemType, JobItemType.RAW_ZIP),
+              eq(ocrJobItems.itemType, JobItemType.ORIGINAL_ZIP),
+              eq(ocrJobItems.itemType, JobItemType.CROPPED_ZIP)
+            )
+        )
+      );
+
+      let totalTxtBytes = 0;
+      let totalDocxBytes = 0;
+      let totalZipBytes = 0;
+      let originalZipBytes = 0;
+      let croppedZipBytes = 0;
+
+      for (const item of items) {
+        const size = item.sizeBytes ?? 0;
+        if (item.itemType === JobItemType.TXT_DOCUMENT) {
+          totalTxtBytes += size;
+        }
+        if (item.itemType === JobItemType.DOCX_DOCUMENT) {
+          totalDocxBytes += size;
+      }
+        if (item.itemType === JobItemType.RAW_ZIP) {
+          totalZipBytes += size;
+        }
+        if (item.itemType === JobItemType.ORIGINAL_ZIP) {
+          originalZipBytes += size;
+        }
+        if (item.itemType === JobItemType.CROPPED_ZIP) {
+          croppedZipBytes += size;
+      }
+    }
+
+      const totalBytes = totalTxtBytes + totalDocxBytes + totalZipBytes + originalZipBytes + croppedZipBytes;
+
+      return {
+        jobId,
+        totalBytes,
+        breakdown: {
+          txtBytes: totalTxtBytes,
+          docxBytes: totalDocxBytes,
+          rawZipBytes: totalZipBytes,
+          originalZipBytes,
+          croppedZipBytes,
+        },
+      };
+    }),
+
+  getDashboardMetrics: protectedProcedure.query(async ({ ctx }) => {
+    // Get all jobs with their status in one query
+    const allJobs = await ctx.db
+      .select({ jobId: ocrJobs.jobId, status: ocrJobs.status })
       .from(ocrJobs)
       .where(eq(ocrJobs.userId, ctx.userId));
 
-    // Calculate job statistics
+    // Get all relevant items in one query
+    const allItems = await ctx.db
+      .select({
+        jobId: ocrJobItems.jobId,
+        itemType: ocrJobItems.itemType,
+        sizeBytes: ocrJobItems.sizeBytes,
+      })
+      .from(ocrJobItems)
+      .innerJoin(ocrJobs, eq(ocrJobItems.jobId, ocrJobs.jobId))
+      .where(
+        and(
+          eq(ocrJobs.userId, ctx.userId),
+          or(
+            eq(ocrJobItems.itemType, JobItemType.TXT_DOCUMENT),
+            eq(ocrJobItems.itemType, JobItemType.DOCX_DOCUMENT),
+            eq(ocrJobItems.itemType, JobItemType.RAW_ZIP),
+            eq(ocrJobItems.itemType, JobItemType.THUMBNAIL)
+          )
+        )
+      );
+
+    // Process jobs statistics
     const totalJobs = allJobs.length;
     const completedJobs = allJobs.filter((job) => job.status === JobsStatus.DONE).length;
     const failedJobs = allJobs.filter((job) => job.status === JobsStatus.ERROR).length;
@@ -989,57 +956,43 @@ export const ocrRouter = createTRPCRouter({
       (job) => job.status === JobsStatus.PROCESSING || job.status === JobsStatus.PENDING
     ).length;
 
-    // Get documents count (filtered by userId)
-    const jobsWithDocuments = await ctx.db
-      .select()
-      .from(ocrJobs)
-      .where(
-        and(
-          eq(ocrJobs.userId, ctx.userId),
-          or(isNotNull(ocrJobs.txtPath), isNotNull(ocrJobs.docxPath))
-        )
-      );
+    // Process items statistics
+    const jobsWithTxt = new Set(
+      allItems.filter((item) => item.itemType === JobItemType.TXT_DOCUMENT).map((item) => item.jobId)
+    );
+    const jobsWithDocx = new Set(
+      allItems.filter((item) => item.itemType === JobItemType.DOCX_DOCUMENT).map((item) => item.jobId)
+    );
+    const jobsWithRawZip = new Set(
+      allItems.filter((item) => item.itemType === JobItemType.RAW_ZIP).map((item) => item.jobId)
+    );
+    const jobsWithThumbnail = new Set(
+      allItems.filter((item) => item.itemType === JobItemType.THUMBNAIL).map((item) => item.jobId)
+    );
 
-    let totalDocuments = 0;
-    let txtCount = 0;
-    let docxCount = 0;
-
-    for (const job of jobsWithDocuments) {
-      if (job.txtPath) {
-        totalDocuments++;
-        txtCount++;
-      }
-      if (job.docxPath) {
-        totalDocuments++;
-        docxCount++;
-      }
-    }
-
-    // Get images count (filtered by userId)
-    const jobsWithImages = await ctx.db
-      .select()
-      .from(ocrJobs)
-      .where(and(eq(ocrJobs.userId, ctx.userId), isNotNull(ocrJobs.rawZipPath)));
-
-    const totalImages = jobsWithImages.length;
-    const imagesWithThumbnails = jobsWithImages.filter(
-      (job) => job.thumbnailKey !== null
+    const txtCount = jobsWithTxt.size;
+    const docxCount = jobsWithDocx.size;
+    const totalDocuments = txtCount + docxCount;
+    const totalImages = jobsWithRawZip.size;
+    const imagesWithThumbnails = Array.from(jobsWithRawZip).filter((jobId) =>
+      jobsWithThumbnail.has(jobId)
     ).length;
 
-    // Calculate storage stats
+    // Calculate storage
     let totalTxtBytes = 0;
     let totalDocxBytes = 0;
     let totalZipBytes = 0;
 
-    for (const job of allJobs) {
-      if (job.txtSizeBytes) {
-        totalTxtBytes += job.txtSizeBytes;
+    for (const item of allItems) {
+      const size = item.sizeBytes ?? 0;
+      if (item.itemType === JobItemType.TXT_DOCUMENT) {
+        totalTxtBytes += size;
       }
-      if (job.docxSizeBytes) {
-        totalDocxBytes += job.docxSizeBytes;
+      if (item.itemType === JobItemType.DOCX_DOCUMENT) {
+        totalDocxBytes += size;
       }
-      if (job.rawZipSizeBytes) {
-        totalZipBytes += job.rawZipSizeBytes;
+      if (item.itemType === JobItemType.RAW_ZIP) {
+        totalZipBytes += size;
       }
     }
 
@@ -1073,61 +1026,98 @@ export const ocrRouter = createTRPCRouter({
   }),
 
   deleteAllUserStorage: protectedProcedure.mutation(async ({ ctx }) => {
+    // Delete all files under the user's root prefix
+    const userRootPrefix = getUserRootKey(ctx.userId);
+    
+    try {
+      await deleteObjectsByPrefix(userRootPrefix);
+    } catch (error) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `Failed to delete user storage: ${error instanceof Error ? error.message : "Unknown error"}`,
+      });
+    }
+
+    // Get count of jobs for response
     const jobs = await ctx.db
       .select()
       .from(ocrJobs)
       .where(eq(ocrJobs.userId, ctx.userId));
 
-    const keysToDelete: string[] = [];
-
-    for (const job of jobs) {
-      if (job.txtPath) keysToDelete.push(job.txtPath);
-      if (job.docxPath) keysToDelete.push(job.docxPath);
-      if (job.rawZipPath) keysToDelete.push(job.rawZipPath);
-      if (job.thumbnailKey) keysToDelete.push(job.thumbnailKey);
-      if (job.zipPath) keysToDelete.push(job.zipPath);
-    }
-
-    // Delete all objects
-    let deletedCount = 0;
-    const batchSize = 1000;
-    for (let i = 0; i < keysToDelete.length; i += batchSize) {
-      const batch = keysToDelete.slice(i, i + batchSize);
-      for (const key of batch) {
-        try {
-          await deleteObjectIfExists(key);
-          deletedCount++;
-        } catch {
-          // Ignore errors
-        }
-      }
-    }
-
-    // Guard: ensure userId exists before running update
-    if (!ctx.userId) {
-      throw new TRPCError({
-        code: "UNAUTHORIZED",
-        message: "User ID is required to update jobs",
-      });
-    }
-
-    // Update all jobs to clear paths - restricted to current user's jobs only
-    await ctx.db
-      .update(ocrJobs)
-      .set({
-        txtPath: null,
-        docxPath: null,
-        rawZipPath: null,
-        thumbnailKey: null,
-        txtSizeBytes: null,
-        docxSizeBytes: null,
-        rawZipSizeBytes: null,
-      })
-      .where(eq(ocrJobs.userId, ctx.userId));
-
     return {
-      deletedCount,
+      deleted: true,
       jobsUpdated: jobs.length,
-      };
+    };
+  }),
+
+  getJobItems: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      // Verify job ownership
+      const [job] = await ctx.db
+        .select()
+        .from(ocrJobs)
+        .where(
+          and(eq(ocrJobs.jobId, input.jobId), eq(ocrJobs.userId, ctx.userId))
+        )
+        .limit(1);
+
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Job not found",
+        });
+      }
+
+      const items = await ctx.db
+        .select()
+        .from(ocrJobItems)
+        .where(eq(ocrJobItems.jobId, input.jobId))
+        .orderBy(ocrJobItems.createdAt);
+
+      return items;
     }),
+
+  getJobItemsByType: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+        itemType: z.nativeEnum(JobItemType),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      // Verify job ownership
+      const [job] = await ctx.db
+        .select()
+        .from(ocrJobs)
+        .where(
+          and(eq(ocrJobs.jobId, input.jobId), eq(ocrJobs.userId, ctx.userId))
+        )
+        .limit(1);
+
+      if (!job) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Job not found",
+        });
+      }
+
+      const items = await ctx.db
+        .select()
+        .from(ocrJobItems)
+        .where(
+          and(
+            eq(ocrJobItems.jobId, input.jobId),
+            eq(ocrJobItems.itemType, input.itemType)
+          )
+        )
+        .orderBy(ocrJobItems.createdAt);
+
+      return items;
+    }),
+
 });

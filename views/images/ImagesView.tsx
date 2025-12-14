@@ -195,10 +195,13 @@ interface ImageCardProps {
     thumbnailUrl: { url: string; expiresAt: string; key: string } | null
     thumbnailKey: string | null
     zipUrl: { url: string; expiresAt: string; key: string } | null
+    croppedZipUrl: { url: string; expiresAt: string; key: string } | null
     sizeBytes: number | null
+    croppedSizeBytes: number | null
     filesExist: {
       thumbnail: boolean
       zip: boolean
+      croppedZip: boolean
     }
     createdAt: Date | null
     updatedAt: Date | null
@@ -211,6 +214,11 @@ const ImageCard = ({ image }: ImageCardProps) => {
   const handleDownload = () => {
     if (!image.zipUrl) return
     downloadSignedUrl(image.zipUrl.url)
+  }
+
+  const handleDownloadCroppedZip = () => {
+    if (!image.croppedZipUrl) return
+    downloadSignedUrl(image.croppedZipUrl.url)
   }
 
   return (
@@ -252,7 +260,15 @@ const ImageCard = ({ image }: ImageCardProps) => {
               {formatBytes(image.sizeBytes)}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          {image.filesExist.croppedZip && image.croppedSizeBytes && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Cropped Size:</span>
+              <span className="font-medium">
+                {formatBytes(image.croppedSizeBytes)}
+              </span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 flex-wrap">
             <Badge
               variant={image.filesExist.thumbnail ? "default" : "secondary"}
               className="text-xs"
@@ -265,22 +281,42 @@ const ImageCard = ({ image }: ImageCardProps) => {
             >
               ZIP: {image.filesExist.zip ? "Available" : "Missing"}
             </Badge>
+            {image.filesExist.croppedZip && (
+              <Badge
+                variant="default"
+                className="text-xs bg-primary text-primary-foreground font-semibold"
+              >
+                Cropped ZIP
+              </Badge>
+            )}
           </div>
         </div>
       </CardContent>
+      <CardFooter className="flex flex-col gap-2">
       {image.filesExist.zip && (
-        <CardFooter>
           <Button
             type="button"
             size="sm"
             onClick={handleDownload}
             disabled={!image.zipUrl}
             className="w-full"
+            variant="outline"
           >
-            Download ZIP
+            Download RAW ZIP
           </Button>
+        )}
+        {image.filesExist.croppedZip && (
+          <Button
+            type="button"
+            size="sm"
+            onClick={handleDownloadCroppedZip}
+            disabled={!image.croppedZipUrl}
+            className="w-full"
+          >
+            Download Cropped ZIP
+          </Button>
+        )}
         </CardFooter>
-      )}
     </Card>
   )
 }

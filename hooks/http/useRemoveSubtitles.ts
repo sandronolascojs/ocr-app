@@ -1,29 +1,27 @@
 import { trpc } from "@/trpc/client";
 import { toast } from "sonner";
 
-interface UseDeleteOcrJobOptions {
-  onSuccess?: () => void;
+interface UseRemoveSubtitlesOptions {
   onError?: (error: Error) => void;
 }
 
-export const useDeleteOcrJob = (options?: UseDeleteOcrJobOptions) => {
+export const useRemoveSubtitles = (options?: UseRemoveSubtitlesOptions) => {
   const utils = trpc.useUtils();
 
-  return trpc.jobs.deleteJob.useMutation({
+  return trpc.subtitles.removeSubtitles.useMutation({
     onSuccess: (data) => {
+      utils.ocr.getResult.invalidate({ jobId: data.jobId });
+      utils.jobs.getJobItems.invalidate({ jobId: data.jobId });
       utils.jobs.listJobs.invalidate();
-      utils.jobs.getJob.invalidate({ jobId: data.jobId });
 
-      toast.success("Job deleted", {
-        description: "The job and all its files have been permanently deleted.",
+      toast.success("Remove subtitles started", {
+        description: "The cropped ZIP will be available shortly.",
       });
-
-      options?.onSuccess?.();
     },
     onError: (error) => {
       const errorMessage =
         error instanceof Error ? error.message : error.message || "Unexpected error";
-      toast.error("Failed to delete job", {
+      toast.error("Failed to start remove subtitles", {
         description: errorMessage,
       });
       const errorObj = error instanceof Error ? error : new Error(errorMessage);

@@ -14,7 +14,7 @@ export const useDeleteAllUserStorage = (
   return trpc.ocr.deleteAllUserStorage.useMutation({
     onSuccess: () => {
       utils.ocr.getStorageStats.invalidate()
-      utils.ocr.getAllDocuments.invalidate()
+      utils.ocr.listDocuments.invalidate()
       utils.ocr.getAllImages.invalidate()
       utils.ocr.listJobs.invalidate()
       toast.success("Storage deleted", {

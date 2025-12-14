@@ -39,13 +39,17 @@ const data = {
       icon: Home,
     },
     {
-      title: "OCR Processing",
+      title: "Jobs",
       url: "/new-job",
       icon: Scan,
       items: [
         {
-          title: "New Job",
+          title: "New OCR Job",
           url: "/new-job",
+        },
+        {
+          title: "New Subtitle Removal",
+          url: "/subtitle-removal",
         },
         {
           title: "History",

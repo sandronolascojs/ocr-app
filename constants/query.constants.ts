@@ -10,6 +10,10 @@ const DOCUMENTS_CONFIG = {
   DEFAULT_TYPE: "all" as const,
 } as const;
 
+const JOBS_CONFIG = {
+  DEFAULT_TYPE: "all" as const,
+} as const;
+
 export const QUERY_CONFIG = {
   REFRESH_INTERVAL_MS: 3000, // 3s
   PAGINATION: PAGINATION_CONFIG,
@@ -18,4 +22,5 @@ export const QUERY_CONFIG = {
     offset: PAGINATION_CONFIG.DEFAULT_OFFSET,
   },
   DOCUMENTS: DOCUMENTS_CONFIG,
+  JOBS: JOBS_CONFIG,
 } as const;

@@ -31,20 +31,9 @@ import {
 } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn, formatBytes, downloadSignedUrl } from "@/lib/utils"
-import { Download, Search, X } from "lucide-react"
+import { Download, Search, X, Image as ImageIcon } from "lucide-react"
 import { QUERY_CONFIG } from "@/constants/query.constants"
-
-type Document = {
-  jobId: string
-  type: "txt" | "docx"
-  sizeBytes: number | null
-  url: { url: string; expiresAt: string; key: string } | null
-  filesExist: boolean
-  thumbnailUrl: { url: string; expiresAt: string; key: string } | null
-  thumbnailKey: string | null
-  createdAt: Date | null
-  updatedAt: Date | null
-}
+import { Document } from "@/types"
 
 interface DocumentsViewProps {}
 
@@ -82,6 +71,29 @@ export const DocumentsView = ({}: DocumentsViewProps) => {
   const columns = useMemo<ColumnDef<Document>[]>(
     () => [
       {
+        accessorKey: "thumbnail",
+        header: "",
+        cell: ({ row }) => {
+          const document = row.original
+          if (!document.thumbnailUrl) {
+            return (
+              <div className="flex items-center justify-center w-10 h-10 rounded border bg-muted/50">
+                <ImageIcon className="h-4 w-4 text-muted-foreground" />
+              </div>
+            )
+          }
+          return (
+            <div className="w-10 h-10 rounded border overflow-hidden">
+              <img
+                src={document.thumbnailUrl.url}
+                alt={`Thumbnail for job ${document.jobId}`}
+                className="w-full h-full object-cover"
+              />
+            </div>
+          )
+        },
+      },
+      {
         accessorKey: "jobId",
         header: "Job ID",
         cell: ({ row }) => (
@@ -89,38 +101,58 @@ export const DocumentsView = ({}: DocumentsViewProps) => {
         ),
       },
       {
-        accessorKey: "type",
-        header: "Type",
+        accessorKey: "types",
+        header: "Types",
         cell: ({ row }) => {
-          const type = row.getValue("type") as "txt" | "docx"
+          const document = row.original
+          const types: Array<{ type: "txt" | "docx"; available: boolean }> = []
+          
+          if (document.txt) {
+            types.push({ type: "txt", available: document.txt.filesExist })
+          }
+          if (document.docx) {
+            types.push({ type: "docx", available: document.docx.filesExist })
+          }
+
+          if (types.length === 0) {
+            return (
+              <span className="text-sm text-muted-foreground">No documents</span>
+            )
+          }
+
           return (
-            <Badge variant="outline" className="uppercase">
+            <div className="flex gap-2">
+              {types.map(({ type, available }) => (
+                <Badge
+                  key={type}
+                  variant={available ? "default" : "secondary"}
+                  className="uppercase"
+                >
               {type}
             </Badge>
+              ))}
+            </div>
           )
         },
       },
       {
-        accessorKey: "sizeBytes",
-        header: "Size",
+        accessorKey: "totalSize",
+        header: "Total Size",
         cell: ({ row }) => {
-          const sizeBytes = row.getValue("sizeBytes") as number | null
+          const document = row.original
+          let totalBytes = 0
+          
+          if (document.txt?.sizeBytes) {
+            totalBytes += document.txt.sizeBytes
+          }
+          if (document.docx?.sizeBytes) {
+            totalBytes += document.docx.sizeBytes
+          }
+
           return (
             <span className="text-sm text-muted-foreground">
-              {sizeBytes !== null ? formatBytes(sizeBytes) : "N/A"}
+              {totalBytes > 0 ? formatBytes(totalBytes) : "N/A"}
             </span>
-          )
-        },
-      },
-      {
-        accessorKey: "filesExist",
-        header: "Status",
-        cell: ({ row }) => {
-          const filesExist = row.getValue("filesExist") as boolean
-          return (
-            <Badge variant={filesExist ? "default" : "secondary"}>
-              {filesExist ? "Available" : "Missing"}
-            </Badge>
           )
         },
       },
@@ -190,7 +222,7 @@ export const DocumentsView = ({}: DocumentsViewProps) => {
             Documents
           </h1>
           <p className="text-sm text-muted-foreground">
-            All generated documents from your OCR jobs
+            All jobs with generated documents (TXT and DOCX)
           </p>
         </div>
         <Button
@@ -257,7 +289,7 @@ export const DocumentsView = ({}: DocumentsViewProps) => {
         documentsQuery.documents.length === 0 && (
           <div className="rounded-md border p-8">
             <p className="text-sm text-muted-foreground text-center">
-              No documents found. Complete an OCR job to generate documents.
+              No jobs with documents found. Complete an OCR job to generate documents.
             </p>
           </div>
         )}
@@ -393,7 +425,7 @@ export const DocumentsView = ({}: DocumentsViewProps) => {
                 pagination.offset + pagination.limit,
                 documentsQuery.total ?? 0
               )}{" "}
-              of {documentsQuery.total ?? 0} documents
+              of {documentsQuery.total ?? 0} jobs
             </div>
           </>
         )}
@@ -406,21 +438,44 @@ interface DocumentActionsProps {
 }
 
 const DocumentActions = ({ document }: DocumentActionsProps) => {
-  const handleDownload = () => {
-    if (!document.url) return
-    downloadSignedUrl(document.url.url)
+  const handleDownloadTxt = () => {
+    if (!document.txt?.url) return
+    downloadSignedUrl(document.txt.url.url)
+  }
+
+  const handleDownloadDocx = () => {
+    if (!document.docx?.url) return
+    downloadSignedUrl(document.docx.url.url)
   }
 
   return (
+    <div className="flex gap-2">
+      {document.txt && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleDownloadTxt}
+          disabled={!document.txt.filesExist || !document.txt.url}
+          className="h-8 w-8 p-0"
+          title="Download TXT"
+        >
+          <Download className="h-4 w-4" />
+          <span className="sr-only">Download TXT</span>
+        </Button>
+      )}
+      {document.docx && (
     <Button
       variant="ghost"
       size="sm"
-      onClick={handleDownload}
-      disabled={!document.filesExist || !document.url}
+          onClick={handleDownloadDocx}
+          disabled={!document.docx.filesExist || !document.docx.url}
       className="h-8 w-8 p-0"
+          title="Download DOCX"
     >
       <Download className="h-4 w-4" />
-      <span className="sr-only">Download {document.type.toUpperCase()}</span>
+          <span className="sr-only">Download DOCX</span>
     </Button>
+      )}
+    </div>
   )
 }
