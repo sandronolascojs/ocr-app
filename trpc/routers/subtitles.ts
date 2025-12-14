@@ -110,6 +110,11 @@ export const subtitlesRouter = createTRPCRouter({
       });
 
       // Send event to Inngest
+      // NOTE: The Inngest function handling REMOVE_SUBTITLES should only update the step to:
+      // - PREPROCESSING (while processing images)
+      // - DONE (when complete)
+      // It should NEVER set the step to DOCS_BUILT, BATCH_SUBMITTED, or RESULTS_SAVED
+      // as these steps are only valid for OCR jobs.
       await inngest.send({
         name: InngestEvents.REMOVE_SUBTITLES,
         data: {

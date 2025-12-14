@@ -197,12 +197,19 @@ export const JobProgressCard = ({
                 <div className="space-y-2">
                   {steps.map((s) => {
                     const isActive = job.step === s;
+                    // For SUBTITLE_REMOVAL jobs, only PREPROCESSING is valid
+                    // If step is invalid (e.g., DOCS_BUILT), treat it as if still in PREPROCESSING
+                    const effectiveStep = job.jobType === JobType.SUBTITLE_REMOVAL && 
+                      job.step !== JobStep.PREPROCESSING && 
+                      job.status !== JobsStatus.DONE
+                        ? JobStep.PREPROCESSING // Treat invalid steps as PREPROCESSING
+                        : job.step;
                     const isCompleted =
-                      (job.step === JobStep.BATCH_SUBMITTED && s === JobStep.PREPROCESSING) ||
-                      (job.step === JobStep.RESULTS_SAVED &&
+                      (effectiveStep === JobStep.BATCH_SUBMITTED && s === JobStep.PREPROCESSING) ||
+                      (effectiveStep === JobStep.RESULTS_SAVED &&
                         (s === JobStep.PREPROCESSING ||
                           s === JobStep.BATCH_SUBMITTED)) ||
-                      (job.step === JobStep.DOCS_BUILT &&
+                      (effectiveStep === JobStep.DOCS_BUILT &&
                         (s === JobStep.PREPROCESSING ||
                           s === JobStep.BATCH_SUBMITTED ||
                           s === JobStep.RESULTS_SAVED)) ||

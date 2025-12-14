@@ -189,6 +189,14 @@ export const ocrRouter = createTRPCRouter({
         });
       }
 
+      // For SUBTITLE_REMOVAL jobs, only allow retry from PREPROCESSING
+      if (job.jobType === JobType.SUBTITLE_REMOVAL && step !== JobStep.PREPROCESSING) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Subtitle removal jobs can only be retried from PREPROCESSING step.",
+        });
+      }
+
       // Get ORIGINAL_ZIP item
       const [originalZipItem] = await ctx.db
         .select()

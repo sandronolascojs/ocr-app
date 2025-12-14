@@ -115,6 +115,11 @@ export const jobsRouter = createTRPCRouter({
 
       // Trigger Inngest event based on job type
       if (jobType === JobType.SUBTITLE_REMOVAL) {
+        // NOTE: The Inngest function handling REMOVE_SUBTITLES should only update the step to:
+        // - PREPROCESSING (while processing)
+        // - DONE (when complete)
+        // It should NEVER set the step to DOCS_BUILT, BATCH_SUBMITTED, or RESULTS_SAVED
+        // as these steps are only valid for OCR jobs.
         await inngest.send({
           name: InngestEvents.REMOVE_SUBTITLES,
           data: {
@@ -344,6 +349,8 @@ export const jobsRouter = createTRPCRouter({
             // Different progress calculation based on job type
             if (job.jobType === JobType.SUBTITLE_REMOVAL) {
               // SUBTITLE_REMOVAL only has PREPROCESSING (0-50%) and DONE (100%)
+              // If step is not PREPROCESSING, treat it as invalid and default to PREPROCESSING logic
+              // This prevents DOCS_BUILT or other OCR steps from being saved for SUBTITLE_REMOVAL jobs
               if (job.step === JobStep.PREPROCESSING) {
                 if (job.totalImages > 0) {
                   const progressWithinStep = Math.min(
@@ -355,7 +362,8 @@ export const jobsRouter = createTRPCRouter({
                 }
                 return 0;
               }
-              // Other steps should not occur, but return 0 as fallback
+              // Invalid step for SUBTITLE_REMOVAL (should only be PREPROCESSING or DONE)
+              // Return 0 as fallback - the step should be corrected by the processing server
               return 0;
             }
 
@@ -519,6 +527,8 @@ export const jobsRouter = createTRPCRouter({
         // Different progress calculation based on job type
         if (job.jobType === JobType.SUBTITLE_REMOVAL) {
           // SUBTITLE_REMOVAL only has PREPROCESSING (0-50%) and DONE (100%)
+          // If step is not PREPROCESSING, treat it as invalid and default to PREPROCESSING logic
+          // This prevents DOCS_BUILT or other OCR steps from being saved for SUBTITLE_REMOVAL jobs
           if (job.step === JobStep.PREPROCESSING) {
             if (job.totalImages > 0) {
               const progressWithinStep = Math.min(
@@ -530,7 +540,8 @@ export const jobsRouter = createTRPCRouter({
             }
             return 0;
           }
-          // Other steps should not occur, but return 0 as fallback
+          // Invalid step for SUBTITLE_REMOVAL (should only be PREPROCESSING or DONE)
+          // Return 0 as fallback - the step should be corrected by the processing server
           return 0;
         }
 
