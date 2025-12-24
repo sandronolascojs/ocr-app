@@ -31,12 +31,20 @@ import { toast } from "sonner";
 import { JobsStatus, JobStep, JobType } from "@/types";
 import { downloadSignedUrl, formatBytes } from "@/lib/utils";
 import { JobProgressCard } from "@/views/shared/JobProgressCard";
+import { UPLOAD_LIMITS } from "@/constants/upload.constants";
 
 // ---------- Zod schema para el form de upload ----------
 
 const uploadSchema = z.object({
   file: z.custom<File>((file) => file instanceof File)
-    .refine((file) => file.name.toLowerCase().endsWith(".zip"), "Only .zip files are allowed"),
+    .refine(
+      (file) => file.name.toLowerCase().endsWith(".zip"),
+      "Only .zip files are allowed"
+    )
+    .refine(
+      (file) => file.size <= UPLOAD_LIMITS.maxZipBytes,
+      `Max file size is ${UPLOAD_LIMITS.maxZipLabel}`
+    ),
 });
 
 type UploadFormValues = z.infer<typeof uploadSchema>;
@@ -200,7 +208,8 @@ export const NewJobView = () => {
               <CardDescription>
                 Only <span className="font-mono">.zip</span> files containing{" "}
                 <span className="font-mono">.png</span> or{" "}
-                <span className="font-mono">.jpg</span> images.
+                <span className="font-mono">.jpg</span> images. Max size{" "}
+                <span className="font-mono">{UPLOAD_LIMITS.maxZipLabel}</span>.
               </CardDescription>
             </CardHeader>
             <CardContent>

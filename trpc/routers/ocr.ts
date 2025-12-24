@@ -3,15 +3,20 @@ import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import { ocrJobs, ocrJobItems } from "@/db/schema";
 import { inngest } from "@/inngest/client";
 import {
+  abortMultipartUpload,
   createSignedDownloadUrl,
   createSignedThumbnailUrl,
   createSignedUploadUrl,
+  createMultipartUpload,
+  createSignedUploadPartUrls,
   deleteObjectIfExists,
   deleteObjectsByPrefix,
   ensureObjectExists,
+  completeMultipartUpload,
   getJobZipKey,
   getUserRootKey,
   type SignedDownloadUrl,
+  shouldUseMultipartUpload,
 } from "@/lib/storage";
 import { InngestEvents, JobsStatus, JobStep, JobType, Document } from "@/types";
 import { JobItemType } from "@/types/enums/jobs/jobItemType.enum";
@@ -19,6 +24,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, like, or, sql } from "drizzle-orm";
 import { QUERY_CONFIG } from "@/constants/query.constants";
+import { UPLOAD_LIMITS } from "@/constants/upload.constants";
 
 export const ocrRouter = createTRPCRouter({
   uploadZip: protectedProcedure
@@ -26,22 +32,114 @@ export const ocrRouter = createTRPCRouter({
       z.object({
         fileType: z.string().min(1).max(128).optional(),
         filename: z.string(),
-        fileSize: z.number().int().positive(),
+        fileSize: z.number().int().positive().max(UPLOAD_LIMITS.maxZipBytes),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const jobId = createId();
       const zipKey = getJobZipKey(ctx.userId, jobId);
 
-      const signedUpload = await createSignedUploadUrl({
-        key: zipKey,
-        contentType: input.fileType ?? "application/zip",
-      });
+      const contentType = input.fileType ?? "application/zip";
+
+      const upload = shouldUseMultipartUpload(input.fileSize)
+        ? await createMultipartUpload({
+            key: zipKey,
+            contentType,
+            fileSizeBytes: input.fileSize,
+          })
+        : await createSignedUploadUrl({
+            key: zipKey,
+            contentType,
+          });
 
       return {
         jobId,
-        upload: signedUpload,
+        upload,
       };
+    }),
+
+  getZipMultipartPartUrls: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+        uploadId: z.string().min(1),
+        contentType: z.string().min(1).max(128).optional(),
+        startPartNumber: z.number().int().min(1),
+        count: z.number().int().min(1).max(1000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const zipKey = getJobZipKey(ctx.userId, input.jobId);
+      const partNumbers = Array.from({ length: input.count }, (_, idx) => {
+        return input.startPartNumber + idx;
+      });
+
+      const urls = await createSignedUploadPartUrls({
+        key: zipKey,
+        uploadId: input.uploadId,
+        contentType: input.contentType ?? "application/zip",
+        partNumbers,
+      });
+
+      return { urls };
+    }),
+
+  completeZipMultipartUpload: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+        uploadId: z.string().min(1),
+        parts: z
+          .array(
+            z.object({
+              partNumber: z.number().int().min(1),
+              etag: z.string().min(1),
+            })
+          )
+          .min(1),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const zipKey = getJobZipKey(ctx.userId, input.jobId);
+
+      try {
+        await completeMultipartUpload({
+          key: zipKey,
+          uploadId: input.uploadId,
+          parts: input.parts,
+        });
+
+        return { completed: true };
+      } catch (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Failed to complete multipart upload: ${error instanceof Error ? error.message : "Unknown error"}`,
+        });
+      }
+    }),
+
+  abortZipMultipartUpload: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+        uploadId: z.string().min(1),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const zipKey = getJobZipKey(ctx.userId, input.jobId);
+
+      try {
+        await abortMultipartUpload({
+          key: zipKey,
+          uploadId: input.uploadId,
+        });
+        return { aborted: true };
+      } catch (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Failed to abort multipart upload: ${error instanceof Error ? error.message : "Unknown error"}`,
+        });
+      }
     }),
 
   abortUpload: protectedProcedure

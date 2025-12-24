@@ -26,12 +26,20 @@ import { JobsStatus, JobType } from "@/types";
 import { downloadSignedUrl, formatBytes } from "@/lib/utils";
 import { JobProgressCard } from "@/views/shared/JobProgressCard";
 import { useOcrJob } from "@/hooks/http/useOcrJob";
+import { UPLOAD_LIMITS } from "@/constants/upload.constants";
 
 // ---------- Zod schema para el form de upload ----------
 
 const uploadSchema = z.object({
   file: z.custom<File>((file) => file instanceof File)
-    .refine((file) => file.name.toLowerCase().endsWith(".zip"), "Only .zip files are allowed"),
+    .refine(
+      (file) => file.name.toLowerCase().endsWith(".zip"),
+      "Only .zip files are allowed"
+    )
+    .refine(
+      (file) => file.size <= UPLOAD_LIMITS.maxZipBytes,
+      `Max file size is ${UPLOAD_LIMITS.maxZipLabel}`
+    ),
 });
 
 type UploadFormValues = z.infer<typeof uploadSchema>;

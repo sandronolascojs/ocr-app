@@ -9,6 +9,10 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
@@ -52,6 +56,52 @@ const createExpiryIso = (ttlSeconds: number): string =>
   new Date(Date.now() + ttlSeconds * 1000).toISOString();
 
 const DEFAULT_STREAM_UPLOAD_CACHE_CONTROL = "private, max-age=0, must-revalidate";
+const R2_SINGLE_PART_MAX_BYTES = 5 * 1024 * 1024 * 1024; // 5 GiB
+const R2_MULTIPART_MIN_PART_BYTES = 8 * 1024 * 1024; // keep comfortably above 5MiB minimum (except last part)
+const R2_MULTIPART_MAX_PARTS = 10_000;
+
+export type MultipartUploadInit = SignedUrlBase & {
+  type: "multipart";
+  uploadId: string;
+  partSizeBytes: number;
+  totalParts: number;
+  method: "PUT";
+  headers: Record<string, string>;
+};
+
+export type UploadPlan =
+  | ({
+      type: "single";
+      method: "PUT";
+      headers: Record<string, string>;
+    } & SignedUrlBase)
+  | MultipartUploadInit;
+
+type CompletedPart = {
+  partNumber: number;
+  etag: string;
+};
+
+const roundUpToMiB = (bytes: number): number => {
+  const mib = 1024 * 1024;
+  return Math.ceil(bytes / mib) * mib;
+};
+
+export const pickMultipartPartSizeBytes = (fileSizeBytes: number): number => {
+  const minBytesToKeepPartCountUnderLimit = Math.ceil(
+    fileSizeBytes / R2_MULTIPART_MAX_PARTS
+  );
+
+  return Math.max(
+    R2_MULTIPART_MIN_PART_BYTES,
+    roundUpToMiB(minBytesToKeepPartCountUnderLimit)
+  );
+};
+
+export const shouldUseMultipartUpload = (fileSizeBytes: number): boolean => {
+  // Cloudflare R2 single-part upload limit is ~5 GiB. Anything above must use multipart.
+  return fileSizeBytes > R2_SINGLE_PART_MAX_BYTES;
+};
 
 /**
  * Sanitizes a filename for use in Content-Disposition header.
@@ -121,6 +171,136 @@ export const createSignedUploadUrl = async (params: {
     },
     expiresAt: createExpiryIso(ttl),
   };
+};
+
+export const createMultipartUpload = async (params: {
+  key: string;
+  contentType: string;
+  fileSizeBytes: number;
+}): Promise<MultipartUploadInit> => {
+  const ttl = env.R2_SIGNED_UPLOAD_TTL_SECONDS;
+  const createResponse = await r2Client.send(
+    new CreateMultipartUploadCommand({
+      Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+      Key: params.key,
+      ContentType: params.contentType,
+    })
+  );
+
+  if (!createResponse.UploadId) {
+    throw new Error("Failed to create multipart upload: missing UploadId.");
+  }
+
+  const partSizeBytes = pickMultipartPartSizeBytes(params.fileSizeBytes);
+  const totalParts = Math.ceil(params.fileSizeBytes / partSizeBytes);
+
+  if (totalParts > R2_MULTIPART_MAX_PARTS) {
+    throw new Error(
+      `Multipart upload would require ${totalParts} parts which exceeds the maximum of ${R2_MULTIPART_MAX_PARTS}.`
+    );
+  }
+
+  return {
+    type: "multipart",
+    key: params.key,
+    url: "", // not used for multipart; parts are uploaded via per-part signed URLs
+    uploadId: createResponse.UploadId,
+    partSizeBytes,
+    totalParts,
+    method: "PUT",
+    headers: {
+      // UploadPart requests should not require Content-Type, but it is safe if the client sets it.
+      "Content-Type": params.contentType,
+    },
+    expiresAt: createExpiryIso(ttl),
+  };
+};
+
+export type SignedUploadPartUrl = {
+  partNumber: number;
+  url: string;
+  method: "PUT";
+  headers: Record<string, string>;
+  expiresAt: string;
+};
+
+export const createSignedUploadPartUrls = async (params: {
+  key: string;
+  uploadId: string;
+  contentType: string;
+  partNumbers: number[];
+}): Promise<SignedUploadPartUrl[]> => {
+  const ttl = env.R2_SIGNED_UPLOAD_TTL_SECONDS;
+  const expiresAt = createExpiryIso(ttl);
+
+  const unique = Array.from(new Set(params.partNumbers)).sort((a, b) => a - b);
+
+  const urls = await Promise.all(
+    unique.map(async (partNumber) => {
+      if (!Number.isInteger(partNumber) || partNumber < 1) {
+        throw new Error(`Invalid multipart partNumber: ${partNumber}`);
+      }
+
+      const command = new UploadPartCommand({
+        Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+        Key: params.key,
+        UploadId: params.uploadId,
+        PartNumber: partNumber,
+      });
+
+      const url = await getSignedUrl(r2Client, command, { expiresIn: ttl });
+
+      return {
+        partNumber,
+        url,
+        method: "PUT" as const,
+        headers: {
+          "Content-Type": params.contentType,
+        },
+        expiresAt,
+      };
+    })
+  );
+
+  return urls;
+};
+
+export const completeMultipartUpload = async (params: {
+  key: string;
+  uploadId: string;
+  parts: CompletedPart[];
+}): Promise<void> => {
+  const normalizedParts = params.parts
+    .slice()
+    .sort((a, b) => a.partNumber - b.partNumber)
+    .map((p) => ({
+      ETag: p.etag,
+      PartNumber: p.partNumber,
+    }));
+
+  await r2Client.send(
+    new CompleteMultipartUploadCommand({
+      Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+      Key: params.key,
+      UploadId: params.uploadId,
+      MultipartUpload: {
+        Parts: normalizedParts,
+      },
+    })
+  );
+};
+
+export const abortMultipartUpload = async (params: {
+  key: string;
+  uploadId: string;
+}): Promise<void> => {
+  await r2Client.send(
+    new AbortMultipartUploadCommand({
+      Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+      Key: params.key,
+      UploadId: params.uploadId,
+    })
+  );
 };
 
 export const createSignedDownloadUrl = async (params: {
