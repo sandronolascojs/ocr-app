@@ -1,5 +1,6 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
+import { ENV_DEFAULTS } from "./constants/env-defaults.mjs";
 
 export const env = createEnv({
   server: {
@@ -16,12 +17,12 @@ export const env = createEnv({
       .coerce.number()
       .int()
       .positive()
-      .default(900),
+      .default(ENV_DEFAULTS.R2_SIGNED_UPLOAD_TTL_SECONDS),
     R2_SIGNED_DOWNLOAD_TTL_SECONDS: z
       .coerce.number()
       .int()
       .positive()
-      .default(900),
+      .default(ENV_DEFAULTS.R2_SIGNED_DOWNLOAD_TTL_SECONDS),
     OCR_BASE_DIR: z.string().optional(),
     ALLOWED_ORIGINS: z.string().optional(),
     RESEND_API_KEY: z.string().optional(),
