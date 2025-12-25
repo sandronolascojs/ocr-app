@@ -1,7 +1,9 @@
 import { useMutation } from "@tanstack/react-query";
-import { trpc } from "@/trpc/client";
-import { useState, useCallback } from "react";
+import Uppy from "@uppy/core";
+import AwsS3 from "@uppy/aws-s3";
+import { useCallback, useState } from "react";
 
+import { trpc } from "@/trpc/client";
 import { JobType } from "@/types";
 
 type UploadArgs = {
@@ -9,28 +11,32 @@ type UploadArgs = {
   jobType: JobType;
 };
 
+type UploadProgress = {
+  loaded: number;
+  total: number;
+  percentage: number;
+};
+
 type SignedUploadPayload = {
-  type?: "single";
+  key: string;
   url: string;
-  method: string;
+  method: "PUT";
   headers: Record<string, string>;
 };
 
 type MultipartUploadPayload = {
   type: "multipart";
+  key: string;
   uploadId: string;
   partSizeBytes: number;
   totalParts: number;
-  method: "PUT";
   headers: Record<string, string>;
 };
 
 type UploadPayload = SignedUploadPayload | MultipartUploadPayload;
 
-type UploadProgress = {
-  loaded: number;
-  total: number;
-  percentage: number;
+const isMultipart = (upload: UploadPayload): upload is MultipartUploadPayload => {
+  return (upload as MultipartUploadPayload).type === "multipart";
 };
 
 export const useUploadZip = () => {
@@ -57,14 +63,18 @@ export const useUploadZip = () => {
         fileSize: file.size,
       });
 
+      const upload = prepareResponse.upload as UploadPayload;
+      const jobId = prepareResponse.jobId;
+
       let uploadSucceeded = false;
 
       try {
-        await uploadZipToStorage({
+        await uploadZipWithUppy({
           file,
-          jobId: prepareResponse.jobId,
-          upload: prepareResponse.upload as UploadPayload,
+          jobId,
+          upload,
           onProgress,
+          utils,
           getPartUrls: async (args) => {
             const res = await getPartUrls.mutateAsync(args);
             return res.urls;
@@ -76,55 +86,40 @@ export const useUploadZip = () => {
             await abortMultipart.mutateAsync(args);
           },
         });
+
         uploadSucceeded = true;
 
-        await confirmUpload.mutateAsync({ 
-          jobId: prepareResponse.jobId,
+        await confirmUpload.mutateAsync({
+          jobId,
           jobType,
         });
 
-        return { jobId: prepareResponse.jobId };
+        return { jobId };
       } catch (error) {
         // If upload succeeded but confirmUpload fails, attempt cleanup to remove orphaned file
         if (uploadSucceeded) {
-          console.warn(
-            `Upload confirmation failed for job ${prepareResponse.jobId}, attempting cleanup...`
-          );
-
           try {
-            await abortUpload.mutateAsync({ jobId: prepareResponse.jobId });
-            console.info(
-              `Successfully cleaned up orphaned file for job ${prepareResponse.jobId}`
-            );
-          } catch (cleanupError) {
-            console.error(
-              `Failed to cleanup orphaned file for job ${prepareResponse.jobId}:`,
-              cleanupError instanceof Error ? cleanupError.message : cleanupError
-            );
-            // Don't suppress the original error - log cleanup failure but rethrow original
+            await abortUpload.mutateAsync({ jobId });
+          } catch {
+            // best-effort cleanup
           }
         }
-
-        // Rethrow the original error
         throw error;
       }
     },
     onSuccess: () => {
       utils.jobs.listJobs.invalidate();
-      // Reset progress after successful upload
       setTimeout(() => {
         setUploadProgress(null);
       }, 500);
     },
     onError: () => {
-      // Reset progress on error
       setUploadProgress(null);
     },
   });
 
   const mutateAsync = useCallback(
     async (args: UploadArgs) => {
-      // Reset progress when starting a new upload
       setUploadProgress(null);
       return mutation.mutateAsync({
         ...args,
@@ -143,59 +138,6 @@ export const useUploadZip = () => {
   };
 };
 
-const uploadViaSignedUrl = async (
-  file: File,
-  signed: SignedUploadPayload,
-  onProgress?: (progress: UploadProgress) => void
-): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-
-    xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable && onProgress) {
-        const loaded = event.loaded;
-        const total = event.total;
-        const percentage = Math.round((loaded / total) * 100);
-
-        onProgress({
-          loaded,
-          total,
-          percentage,
-  });
-      }
-    });
-
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
-      } else {
-        reject(
-          new Error(
-            `Failed to upload ZIP to storage (status ${xhr.status})`
-          )
-        );
-      }
-    });
-
-    xhr.addEventListener("error", () => {
-      reject(new Error("Network error during upload"));
-    });
-
-    xhr.addEventListener("abort", () => {
-      reject(new Error("Upload was aborted"));
-    });
-
-    xhr.open(signed.method, signed.url);
-
-    // Set headers
-    Object.entries(signed.headers).forEach(([key, value]) => {
-      xhr.setRequestHeader(key, value);
-    });
-
-    xhr.send(file);
-  });
-};
-
 type SignedPartUrl = {
   partNumber: number;
   url: string;
@@ -204,11 +146,12 @@ type SignedPartUrl = {
   expiresAt: string;
 };
 
-type UploadZipToStorageArgs = {
+type UploadZipWithUppyArgs = {
   file: File;
   jobId: string;
   upload: UploadPayload;
   onProgress?: (progress: UploadProgress) => void;
+  utils: ReturnType<typeof trpc.useUtils>;
   getPartUrls: (args: {
     jobId: string;
     uploadId: string;
@@ -219,203 +162,160 @@ type UploadZipToStorageArgs = {
   completeMultipart: (args: {
     jobId: string;
     uploadId: string;
-    parts: Array<{ partNumber: number; etag: string }>;
+    expectedTotalParts: number;
+    expectedSizeBytes: number;
   }) => Promise<void>;
   abortMultipart: (args: { jobId: string; uploadId: string }) => Promise<void>;
 };
 
-const uploadZipToStorage = async ({
+const uploadZipWithUppy = async ({
   file,
   jobId,
   upload,
   onProgress,
+  utils,
   getPartUrls,
   completeMultipart,
   abortMultipart,
-}: UploadZipToStorageArgs): Promise<void> => {
-  if ((upload as MultipartUploadPayload).type === "multipart") {
-    const multipart = upload as MultipartUploadPayload;
-    try {
-      await uploadViaMultipart({
-        file,
-        jobId,
+}: UploadZipWithUppyArgs): Promise<void> => {
+  const contentType = file.type || "application/zip";
+  const multipart = isMultipart(upload) ? upload : null;
+  const single = multipart ? null : (upload as SignedUploadPayload);
+
+  const uppy = new Uppy({
+    autoProceed: true,
+    restrictions: {
+      maxNumberOfFiles: 1,
+    },
+  });
+
+  uppy.on("upload-progress", (_file, progress) => {
+    if (!onProgress) return;
+    const total = file.size;
+    const loaded = progress.bytesUploaded ?? 0;
+    const percentage = total > 0 ? Math.round((loaded / total) * 100) : 0;
+    onProgress({ loaded, total, percentage });
+  });
+
+  uppy.use(AwsS3, {
+    // Bounded concurrency at the plugin level.
+    limit: 4,
+    retryDelays: [0, 1000, 3000, 5000, 10000],
+    shouldUseMultipart: () => Boolean(multipart),
+    getChunkSize: () => multipart?.partSizeBytes ?? file.size,
+    getUploadParameters: async () => {
+      if (multipart) {
+        throw new Error("getUploadParameters called for a multipart upload.");
+      }
+      if (!single) {
+        throw new Error("Missing single upload parameters.");
+      }
+      return {
+        method: "PUT",
+        url: single.url,
+        fields: {},
+        headers: {
+          ...single.headers,
+          "Content-Type": contentType,
+        },
+      };
+    },
+    createMultipartUpload: async () => {
+      if (!multipart) {
+        throw new Error("createMultipartUpload called for a non-multipart upload.");
+      }
+      return {
+        key: multipart.key,
         uploadId: multipart.uploadId,
-        partSizeBytes: multipart.partSizeBytes,
-        totalParts: multipart.totalParts,
-        contentType: multipart.headers["Content-Type"] ?? "application/zip",
-        onProgress,
-        getPartUrls,
-        completeMultipart,
+      };
+    },
+    listParts: async (_file, opts) => {
+      if (!multipart) {
+        throw new Error("listParts called for a non-multipart upload.");
+      }
+      if (!opts.uploadId) {
+        throw new Error("Missing uploadId for listParts.");
+      }
+      // Used by Uppy for pause/resume. We list via server credentials.
+      const res = await utils.ocr.listZipMultipartParts.fetch({
+        jobId,
+        uploadId: opts.uploadId,
       });
-    } catch (error) {
+      return res.parts;
+    },
+    signPart: async (_file, opts) => {
+      const urls = await getPartUrls({
+        jobId,
+        uploadId: opts.uploadId,
+        contentType,
+        startPartNumber: opts.partNumber,
+        count: 1,
+      });
+      const signed = urls[0];
+      if (!signed) {
+        throw new Error(`Failed to sign part ${opts.partNumber}.`);
+      }
+      return {
+        method: "PUT",
+        url: signed.url,
+        fields: {},
+        headers: signed.headers,
+      };
+    },
+    completeMultipartUpload: async (_file, opts) => {
+      if (!multipart) {
+        throw new Error("completeMultipartUpload called for a non-multipart upload.");
+      }
+      if (!opts.uploadId) {
+        throw new Error("Missing uploadId for completeMultipartUpload.");
+      }
+      await completeMultipart({
+        jobId,
+        uploadId: opts.uploadId,
+        expectedTotalParts: multipart.totalParts,
+        expectedSizeBytes: file.size,
+      });
+      return {};
+    },
+    abortMultipartUpload: async (_file, opts) => {
+      if (!multipart) return;
+      const uploadId = opts.uploadId ?? multipart.uploadId;
+      await abortMultipart({
+        jobId,
+        uploadId,
+      });
+    },
+  });
+
+  try {
+    uppy.addFile({
+      name: file.name,
+      type: contentType,
+      data: file,
+      source: "local",
+      isRemote: false,
+    });
+
+    const result = await uppy.upload();
+    if (!result) {
+      throw new Error("Upload did not return a result (possibly aborted).");
+    }
+    const failed = result.failed ?? [];
+    if (failed.length > 0) {
+      const err = failed[0]?.error;
+      throw err ?? new Error("Upload failed");
+    }
+  } catch (error) {
+    // Ensure we don't leave dangling multipart uploads behind.
+    if (multipart) {
       try {
         await abortMultipart({ jobId, uploadId: multipart.uploadId });
       } catch {
-        // best-effort abort; rethrow original error
+        // best-effort cleanup
       }
-      throw error;
     }
-    return;
+    throw error;
+  } finally {
+    uppy.destroy();
   }
-
-  await uploadViaSignedUrl(file, upload as SignedUploadPayload, onProgress);
-};
-
-type UploadViaMultipartArgs = {
-  file: File;
-  jobId: string;
-  uploadId: string;
-  partSizeBytes: number;
-  totalParts: number;
-  contentType: string;
-  onProgress?: (progress: UploadProgress) => void;
-  getPartUrls: UploadZipToStorageArgs["getPartUrls"];
-  completeMultipart: UploadZipToStorageArgs["completeMultipart"];
-};
-
-const uploadViaMultipart = async ({
-  file,
-  jobId,
-  uploadId,
-  partSizeBytes,
-  totalParts,
-  contentType,
-  onProgress,
-  getPartUrls,
-  completeMultipart,
-}: UploadViaMultipartArgs): Promise<void> => {
-  const urlsByPart = new Map<number, SignedPartUrl>();
-
-  for (let start = 1; start <= totalParts; start += 500) {
-    const count = Math.min(500, totalParts - start + 1);
-    const urls = await getPartUrls({
-      jobId,
-      uploadId,
-      contentType,
-      startPartNumber: start,
-      count,
-    });
-    for (const u of urls) {
-      urlsByPart.set(u.partNumber, u);
-    }
-  }
-
-  const uploadedBytesByPart = new Map<number, number>();
-  const completedParts: Array<{ partNumber: number; etag: string }> = [];
-
-  const updateProgress = () => {
-    if (!onProgress) return;
-    let loaded = 0;
-    for (const v of uploadedBytesByPart.values()) loaded += v;
-    const total = file.size;
-    const percentage = total > 0 ? Math.round((loaded / total) * 100) : 0;
-    onProgress({ loaded, total, percentage });
-  };
-
-  const concurrency = 4;
-  let nextPartNumber = 1;
-
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (true) {
-      const partNumber = nextPartNumber;
-      nextPartNumber += 1;
-      if (partNumber > totalParts) return;
-
-      const startByte = (partNumber - 1) * partSizeBytes;
-      const endByteExclusive = Math.min(file.size, startByte + partSizeBytes);
-      const blob = file.slice(startByte, endByteExclusive);
-
-      const signed = urlsByPart.get(partNumber);
-      if (!signed) {
-        throw new Error(`Missing signed URL for multipart part ${partNumber}.`);
-      }
-
-      const { etag } = await uploadPartViaXhr({
-        signed,
-        blob,
-        onProgress: (loaded) => {
-          uploadedBytesByPart.set(partNumber, loaded);
-          updateProgress();
-        },
-      });
-
-      uploadedBytesByPart.set(partNumber, blob.size);
-      updateProgress();
-      completedParts.push({ partNumber, etag });
-    }
-  });
-
-  await Promise.all(workers);
-
-  // Ensure a stable, complete list of parts for the finalize call
-  const parts = completedParts
-    .slice()
-    .sort((a, b) => a.partNumber - b.partNumber);
-
-  if (parts.length !== totalParts) {
-    throw new Error(
-      `Multipart upload incomplete: uploaded ${parts.length}/${totalParts} parts.`
-    );
-  }
-
-  await completeMultipart({
-    jobId,
-    uploadId,
-    parts,
-  });
-};
-
-type UploadPartViaXhrArgs = {
-  signed: SignedPartUrl;
-  blob: Blob;
-  onProgress: (loaded: number) => void;
-};
-
-const uploadPartViaXhr = async ({
-  signed,
-  blob,
-  onProgress,
-}: UploadPartViaXhrArgs): Promise<{ etag: string }> => {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-
-    xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) {
-        onProgress(event.loaded);
-      }
-    });
-
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const etag = xhr.getResponseHeader("ETag");
-        if (!etag) {
-          reject(new Error("Missing ETag header after uploading a part."));
-          return;
-        }
-        resolve({ etag });
-      } else {
-        reject(
-          new Error(
-            `Failed to upload multipart part ${signed.partNumber} (status ${xhr.status})`
-          )
-        );
-      }
-    });
-
-    xhr.addEventListener("error", () => {
-      reject(new Error("Network error during multipart upload"));
-    });
-
-    xhr.addEventListener("abort", () => {
-      reject(new Error("Multipart upload was aborted"));
-    });
-
-    xhr.open(signed.method, signed.url);
-
-    Object.entries(signed.headers).forEach(([key, value]) => {
-      xhr.setRequestHeader(key, value);
-    });
-
-    xhr.send(blob);
-  });
 };

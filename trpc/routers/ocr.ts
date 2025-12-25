@@ -13,6 +13,10 @@ import {
   deleteObjectsByPrefix,
   ensureObjectExists,
   completeMultipartUpload,
+  completeMultipartUploadByListingParts,
+  getMultipartUploadStatus,
+  listMultipartUploadParts,
+  getObjectSize,
   getJobZipKey,
   getUserRootKey,
   type SignedDownloadUrl,
@@ -84,11 +88,30 @@ export const ocrRouter = createTRPCRouter({
       return { urls };
     }),
 
+  listZipMultipartParts: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+        uploadId: z.string().min(1),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const zipKey = getJobZipKey(ctx.userId, input.jobId);
+      const parts = await listMultipartUploadParts({
+        key: zipKey,
+        uploadId: input.uploadId,
+      });
+
+      return { parts };
+    }),
+
   completeZipMultipartUpload: protectedProcedure
     .input(
       z.object({
         jobId: z.string(),
         uploadId: z.string().min(1),
+        expectedTotalParts: z.number().int().min(1).max(10000).optional(),
+        expectedSizeBytes: z.number().int().positive().optional(),
         parts: z
           .array(
             z.object({
@@ -96,26 +119,82 @@ export const ocrRouter = createTRPCRouter({
               etag: z.string().min(1),
             })
           )
-          .min(1),
+          .min(1)
+          .optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const zipKey = getJobZipKey(ctx.userId, input.jobId);
 
       try {
-        await completeMultipartUpload({
+        if (input.parts && input.parts.length > 0) {
+          await completeMultipartUpload({
+            key: zipKey,
+            uploadId: input.uploadId,
+            parts: input.parts,
+          });
+        } else {
+          await completeMultipartUploadByListingParts({
+            key: zipKey,
+            uploadId: input.uploadId,
+            expectedTotalParts: input.expectedTotalParts,
+            expectedSizeBytes: input.expectedSizeBytes,
+          });
+        }
+
+        // Defensive: ensure the final object exists after completion
+        const exists = await ensureObjectExists(zipKey);
+        if (!exists) {
+          throw new Error("Multipart upload completed but object was not found.");
+        }
+
+        const sizeBytes = await getObjectSize(zipKey);
+        if (
+          typeof input.expectedSizeBytes === "number" &&
+          typeof sizeBytes === "number" &&
+          sizeBytes !== input.expectedSizeBytes
+        ) {
+          // Prevent corrupted/truncated objects from being processed later.
+          await deleteObjectIfExists(zipKey);
+          throw new Error(
+            `Multipart upload produced an unexpected size. expectedSizeBytes=${input.expectedSizeBytes}, actualSizeBytes=${sizeBytes}`
+          );
+        }
+        const download = await createSignedDownloadUrl({
           key: zipKey,
-          uploadId: input.uploadId,
-          parts: input.parts,
+          responseContentType: "application/zip",
+          downloadFilename: "input.zip",
         });
 
-        return { completed: true };
+        return {
+          completed: true,
+          key: zipKey,
+          sizeBytes,
+          download,
+        };
       } catch (error) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: `Failed to complete multipart upload: ${error instanceof Error ? error.message : "Unknown error"}`,
         });
       }
+    }),
+
+  getZipUploadStatus: protectedProcedure
+    .input(
+      z.object({
+        jobId: z.string(),
+        uploadId: z.string().min(1),
+        expectedTotalParts: z.number().int().min(1).max(10000).optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const zipKey = getJobZipKey(ctx.userId, input.jobId);
+      return getMultipartUploadStatus({
+        key: zipKey,
+        uploadId: input.uploadId,
+        expectedTotalParts: input.expectedTotalParts,
+      });
     }),
 
   abortZipMultipartUpload: protectedProcedure

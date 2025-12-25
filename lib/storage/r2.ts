@@ -13,6 +13,7 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListPartsCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
@@ -57,7 +58,10 @@ const createExpiryIso = (ttlSeconds: number): string =>
 
 const DEFAULT_STREAM_UPLOAD_CACHE_CONTROL = "private, max-age=0, must-revalidate";
 const R2_SINGLE_PART_MAX_BYTES = 5 * 1024 * 1024 * 1024; // 5 GiB
-const R2_MULTIPART_MIN_PART_BYTES = 8 * 1024 * 1024; // keep comfortably above 5MiB minimum (except last part)
+// Browser uploads work better with larger part sizes (fewer requests, less signing, fewer edge failures).
+// R2/S3 minimum part size is 5MiB (except last part), maximum part size is 5GiB.
+const R2_MULTIPART_MIN_PART_BYTES = 64 * 1024 * 1024; // 64MiB
+const R2_MULTIPART_MAX_PART_BYTES = 1024 * 1024 * 1024; // 1GiB
 const R2_MULTIPART_MAX_PARTS = 10_000;
 
 export type MultipartUploadInit = SignedUrlBase & {
@@ -88,13 +92,15 @@ const roundUpToMiB = (bytes: number): number => {
 };
 
 export const pickMultipartPartSizeBytes = (fileSizeBytes: number): number => {
-  const minBytesToKeepPartCountUnderLimit = Math.ceil(
-    fileSizeBytes / R2_MULTIPART_MAX_PARTS
-  );
+  // Target a reasonable number of parts for browser reliability.
+  // 50GiB at 64MiB -> ~800 parts. At 256MiB -> ~200 parts.
+  const targetMaxParts = 1000;
+  const minBytesToStayUnderTarget = Math.ceil(fileSizeBytes / targetMaxParts);
+  const candidate = roundUpToMiB(minBytesToStayUnderTarget);
 
-  return Math.max(
-    R2_MULTIPART_MIN_PART_BYTES,
-    roundUpToMiB(minBytesToKeepPartCountUnderLimit)
+  return Math.min(
+    R2_MULTIPART_MAX_PART_BYTES,
+    Math.max(R2_MULTIPART_MIN_PART_BYTES, candidate)
   );
 };
 
@@ -147,6 +153,22 @@ const isNotFoundError = (error: unknown): boolean => {
     );
 
   return isNotFoundName || isNotFoundCode || isNotFoundStatus;
+};
+
+const isNoSuchUploadError = (error: unknown): boolean => {
+  const isNoSuchUploadCode =
+    typeof error === "object" &&
+    error !== null &&
+    "Code" in error &&
+    (error as { Code?: string }).Code === "NoSuchUpload";
+
+  const isNoSuchUploadName =
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    (error as { name?: string }).name === "NoSuchUpload";
+
+  return isNoSuchUploadCode || isNoSuchUploadName;
 };
 
 export const createSignedUploadUrl = async (params: {
@@ -288,6 +310,185 @@ export const completeMultipartUpload = async (params: {
       },
     })
   );
+};
+
+type ListedPart = {
+  partNumber: number;
+  etag: string;
+  sizeBytes: number;
+};
+
+const listAllMultipartParts = async (params: {
+  key: string;
+  uploadId: string;
+}): Promise<ListedPart[]> => {
+  const parts: ListedPart[] = [];
+  let partNumberMarker: string | undefined;
+
+  // S3 ListParts returns up to 1000 parts per page
+  do {
+    const response = await r2Client.send(
+      new ListPartsCommand({
+        Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
+        Key: params.key,
+        UploadId: params.uploadId,
+        PartNumberMarker: partNumberMarker,
+        MaxParts: 1000,
+      })
+    );
+
+    for (const p of response.Parts ?? []) {
+      if (!p.PartNumber || !p.ETag || typeof p.Size !== "number") continue;
+      parts.push({
+        partNumber: p.PartNumber,
+        etag: p.ETag,
+        sizeBytes: p.Size,
+      });
+    }
+
+    partNumberMarker = response.IsTruncated ? response.NextPartNumberMarker : undefined;
+  } while (partNumberMarker);
+
+  return parts;
+};
+
+export type MultipartUploadPart = {
+  PartNumber: number;
+  Size: number;
+  ETag: string;
+};
+
+export const listMultipartUploadParts = async (params: {
+  key: string;
+  uploadId: string;
+}): Promise<MultipartUploadPart[]> => {
+  const parts = await listAllMultipartParts({
+    key: params.key,
+    uploadId: params.uploadId,
+  });
+
+  return parts.map((p) => ({
+    PartNumber: p.partNumber,
+    Size: p.sizeBytes,
+    ETag: p.etag,
+  }));
+};
+
+const sleep = async (ms: number): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+};
+
+/**
+ * Completes a multipart upload by listing the uploaded parts server-side.
+ *
+ * This avoids requiring the browser to read ETag response headers (often blocked by CORS),
+ * and guarantees the final object is created as a single R2 object.
+ */
+export const completeMultipartUploadByListingParts = async (params: {
+  key: string;
+  uploadId: string;
+  expectedTotalParts?: number;
+  expectedSizeBytes?: number;
+}): Promise<void> => {
+  const maxAttempts = 20;
+  const delayMs = 300;
+
+  let parts: ListedPart[] = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    parts = await listAllMultipartParts({
+      key: params.key,
+      uploadId: params.uploadId,
+    });
+
+    if (!params.expectedTotalParts || parts.length >= params.expectedTotalParts) {
+      break;
+    }
+
+    await sleep(delayMs);
+  }
+
+  if (parts.length === 0) {
+    throw new Error(
+      "Cannot complete multipart upload: no uploaded parts were found for this uploadId."
+    );
+  }
+
+  if (params.expectedTotalParts && parts.length < params.expectedTotalParts) {
+    throw new Error(
+      `Cannot complete multipart upload: expected ${params.expectedTotalParts} parts, but only found ${parts.length}.`
+    );
+  }
+
+  if (params.expectedTotalParts) {
+    const partNumbers = new Set(parts.map((p) => p.partNumber));
+    for (let n = 1; n <= params.expectedTotalParts; n += 1) {
+      if (!partNumbers.has(n)) {
+        throw new Error(
+          `Cannot complete multipart upload: missing partNumber ${n} of ${params.expectedTotalParts}.`
+        );
+      }
+    }
+  }
+
+  if (typeof params.expectedSizeBytes === "number") {
+    const totalUploadedBytes = parts.reduce((acc, p) => acc + p.sizeBytes, 0);
+    if (totalUploadedBytes !== params.expectedSizeBytes) {
+      throw new Error(
+        `Cannot complete multipart upload: uploaded bytes (${totalUploadedBytes}) do not match expected file size (${params.expectedSizeBytes}).`
+      );
+    }
+  }
+
+  await completeMultipartUpload({
+    key: params.key,
+    uploadId: params.uploadId,
+    parts,
+  });
+};
+
+export type MultipartUploadStatus = {
+  key: string;
+  uploadId: string;
+  partCount: number;
+  expectedTotalParts: number | null;
+  objectExists: boolean;
+  objectSizeBytes: number | null;
+};
+
+export const getMultipartUploadStatus = async (params: {
+  key: string;
+  uploadId: string;
+  expectedTotalParts?: number;
+}): Promise<MultipartUploadStatus> => {
+  const expectedTotalParts = params.expectedTotalParts ?? null;
+
+  let partsCount = 0;
+  try {
+    const parts = await listAllMultipartParts({
+      key: params.key,
+      uploadId: params.uploadId,
+    });
+    partsCount = parts.length;
+  } catch (error) {
+    // If the upload was already completed/aborted, ListParts can throw NoSuchUpload.
+    if (!isNoSuchUploadError(error)) {
+      throw error;
+    }
+  }
+
+  const objectSizeBytes = await getObjectSize(params.key);
+  const objectExists = objectSizeBytes !== null;
+
+  return {
+    key: params.key,
+    uploadId: params.uploadId,
+    partCount: partsCount,
+    expectedTotalParts,
+    objectExists,
+    objectSizeBytes,
+  };
 };
 
 export const abortMultipartUpload = async (params: {
