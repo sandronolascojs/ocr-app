@@ -174,7 +174,7 @@ const isNoSuchUploadError = (error: unknown): boolean => {
 export const createSignedUploadUrl = async (params: {
   key: string;
   contentType: string;
-}): Promise<SignedUploadUrl> => {
+}): Promise<UploadPlan> => {
   const ttl = env.R2_SIGNED_UPLOAD_TTL_SECONDS;
   const command = new PutObjectCommand({
     Bucket: env.CLOUDFLARE_R2_BUCKET_NAME,
@@ -185,6 +185,7 @@ export const createSignedUploadUrl = async (params: {
   const url = await getSignedUrl(r2Client, command, { expiresIn: ttl });
 
   return {
+    type: "single",
     key: params.key,
     url,
     method: "PUT",
@@ -391,6 +392,7 @@ export const completeMultipartUploadByListingParts = async (params: {
   uploadId: string;
   expectedTotalParts?: number;
   expectedSizeBytes?: number;
+  expectedPartSizeBytes?: number;
 }): Promise<void> => {
   const maxAttempts = 20;
   const delayMs = 300;
@@ -438,6 +440,29 @@ export const completeMultipartUploadByListingParts = async (params: {
       throw new Error(
         `Cannot complete multipart upload: uploaded bytes (${totalUploadedBytes}) do not match expected file size (${params.expectedSizeBytes}).`
       );
+    }
+  }
+
+  if (
+    typeof params.expectedPartSizeBytes === "number" &&
+    params.expectedPartSizeBytes > 0 &&
+    params.expectedTotalParts &&
+    params.expectedTotalParts > 1
+  ) {
+    // All parts except the last must match the declared part size exactly.
+    // This detects client-side mis-chunking/resume bugs where the partNumber -> byte range mapping drifts.
+    for (const p of parts) {
+      const isLast = p.partNumber === params.expectedTotalParts;
+      if (!isLast && p.sizeBytes !== params.expectedPartSizeBytes) {
+        throw new Error(
+          `Cannot complete multipart upload: part ${p.partNumber} size (${p.sizeBytes}) does not match expectedPartSizeBytes (${params.expectedPartSizeBytes}).`
+        );
+      }
+      if (isLast && p.sizeBytes > params.expectedPartSizeBytes) {
+        throw new Error(
+          `Cannot complete multipart upload: last part size (${p.sizeBytes}) exceeds expectedPartSizeBytes (${params.expectedPartSizeBytes}).`
+        );
+      }
     }
   }
 

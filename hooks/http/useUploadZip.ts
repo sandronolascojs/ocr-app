@@ -5,6 +5,8 @@ import { useCallback, useState } from "react";
 
 import { trpc } from "@/trpc/client";
 import { JobType } from "@/types";
+import type { AppRouter } from "@/trpc/routers/_app";
+import type { inferRouterOutputs } from "@trpc/server";
 
 type UploadArgs = {
   file: File;
@@ -17,26 +19,14 @@ type UploadProgress = {
   percentage: number;
 };
 
-type SignedUploadPayload = {
-  key: string;
-  url: string;
-  method: "PUT";
-  headers: Record<string, string>;
-};
+type RouterOutputs = inferRouterOutputs<AppRouter>;
+type UploadZipOutput = RouterOutputs["ocr"]["uploadZip"];
+type UploadPayload = UploadZipOutput["upload"];
 
-type MultipartUploadPayload = {
-  type: "multipart";
-  key: string;
-  uploadId: string;
-  partSizeBytes: number;
-  totalParts: number;
-  headers: Record<string, string>;
-};
-
-type UploadPayload = SignedUploadPayload | MultipartUploadPayload;
-
-const isMultipart = (upload: UploadPayload): upload is MultipartUploadPayload => {
-  return (upload as MultipartUploadPayload).type === "multipart";
+const isMultipart = (
+  upload: UploadPayload
+): upload is Extract<UploadPayload, { type: "multipart" }> => {
+  return upload.type === "multipart";
 };
 
 export const useUploadZip = () => {
@@ -63,7 +53,7 @@ export const useUploadZip = () => {
         fileSize: file.size,
       });
 
-      const upload = prepareResponse.upload as UploadPayload;
+      const upload = prepareResponse.upload;
       const jobId = prepareResponse.jobId;
 
       let uploadSucceeded = false;
@@ -74,10 +64,13 @@ export const useUploadZip = () => {
           jobId,
           upload,
           onProgress,
-          utils,
           getPartUrls: async (args) => {
             const res = await getPartUrls.mutateAsync(args);
             return res.urls;
+          },
+          listParts: async (args) => {
+            const res = await utils.ocr.listZipMultipartParts.fetch(args);
+            return res.parts;
           },
           completeMultipart: async (args) => {
             await completeMultipart.mutateAsync(args);
@@ -151,7 +144,6 @@ type UploadZipWithUppyArgs = {
   jobId: string;
   upload: UploadPayload;
   onProgress?: (progress: UploadProgress) => void;
-  utils: ReturnType<typeof trpc.useUtils>;
   getPartUrls: (args: {
     jobId: string;
     uploadId: string;
@@ -159,11 +151,15 @@ type UploadZipWithUppyArgs = {
     startPartNumber: number;
     count: number;
   }) => Promise<SignedPartUrl[]>;
+  listParts: (args: { jobId: string; uploadId: string }) => Promise<
+    Array<{ PartNumber?: number; ETag?: string; Size?: number }>
+  >;
   completeMultipart: (args: {
     jobId: string;
     uploadId: string;
     expectedTotalParts: number;
     expectedSizeBytes: number;
+    expectedPartSizeBytes: number;
   }) => Promise<void>;
   abortMultipart: (args: { jobId: string; uploadId: string }) => Promise<void>;
 };
@@ -173,14 +169,14 @@ const uploadZipWithUppy = async ({
   jobId,
   upload,
   onProgress,
-  utils,
   getPartUrls,
+  listParts,
   completeMultipart,
   abortMultipart,
 }: UploadZipWithUppyArgs): Promise<void> => {
   const contentType = file.type || "application/zip";
   const multipart = isMultipart(upload) ? upload : null;
-  const single = multipart ? null : (upload as SignedUploadPayload);
+  const single = multipart ? null : (upload as Extract<UploadPayload, { type: "single" }>);
 
   const uppy = new Uppy({
     autoProceed: true,
@@ -237,11 +233,7 @@ const uploadZipWithUppy = async ({
         throw new Error("Missing uploadId for listParts.");
       }
       // Used by Uppy for pause/resume. We list via server credentials.
-      const res = await utils.ocr.listZipMultipartParts.fetch({
-        jobId,
-        uploadId: opts.uploadId,
-      });
-      return res.parts;
+      return listParts({ jobId, uploadId: opts.uploadId });
     },
     signPart: async (_file, opts) => {
       const urls = await getPartUrls({
@@ -274,6 +266,7 @@ const uploadZipWithUppy = async ({
         uploadId: opts.uploadId,
         expectedTotalParts: multipart.totalParts,
         expectedSizeBytes: file.size,
+        expectedPartSizeBytes: multipart.partSizeBytes,
       });
       return {};
     },

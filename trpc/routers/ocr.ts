@@ -112,6 +112,7 @@ export const ocrRouter = createTRPCRouter({
         uploadId: z.string().min(1),
         expectedTotalParts: z.number().int().min(1).max(10000).optional(),
         expectedSizeBytes: z.number().int().positive().optional(),
+        expectedPartSizeBytes: z.number().int().positive().optional(),
         parts: z
           .array(
             z.object({
@@ -139,6 +140,7 @@ export const ocrRouter = createTRPCRouter({
             uploadId: input.uploadId,
             expectedTotalParts: input.expectedTotalParts,
             expectedSizeBytes: input.expectedSizeBytes,
+            expectedPartSizeBytes: input.expectedPartSizeBytes,
           });
         }
 
