@@ -46,7 +46,6 @@
     "@trpc/react-query": "^11.7.2",
     "@trpc/server": "^11.7.2",
     "@types/archiver": "^7.0.0",
-    "@types/unzipper": "^0.10.11",
     "@uppy/aws-s3": "4.3.2",
     "@uppy/core": "^4.5.2",
     "adm-zip": "^0.5.16",
@@ -80,7 +79,6 @@
     "sonner": "^2.0.7",
     "superjson": "^2.2.6",
     "tailwind-merge": "^3.4.0",
-    "unzipper": "^0.12.3",
     "zod": "^4.1.13",
     "zustand": "^5.0.9"
   },
@@ -102,8 +100,7 @@
     "typescript": "^5",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^4.0.15"
-  }
-  ,
+  },
   "pnpm": {
     "overrides": {
       "@smithy/types": "4.11.0"
